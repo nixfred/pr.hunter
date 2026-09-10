@@ -1,5 +1,19 @@
 # Verification
 
+## Version 1.1.0
+
+- 56 Python regression tests cover the existing dispatch protections plus saved
+  projects, stable identities after reopening, optional Herdr, exact launch paths,
+  terminal reuse, double-click suppression and inherited Herdr environment cleanup.
+- The isolated native launch check starts a real Herdr server from a stopped state,
+  creates one workspace in a directory containing spaces and shell metacharacters,
+  reuses it, closes and reopens it, and verifies the saved project key stays stable.
+- The same check removes Herdr from its isolated PATH and records the default-terminal
+  launch arguments and working directory using a launcher shim. This validates the
+  fallback without touching a production session or sending an agent prompt.
+- The native Herdr transport check, real QML service check and Omarchy manifest
+  validation pass. Opening a new project creates a shell, not an AI agent.
+
 ## Version 1.0.1
 
 See the [Grok audit and resolution](docs/audits/2026-09-09.md). The updated release

@@ -4,7 +4,7 @@ import Quickshell.Io
 
 Item {
     id: root
-    readonly property string version: "1.0.1"
+    readonly property string version: "1.1.0"
     property var shell: null
     property var settings: ({})
     property var snapshot: ({projects: [], errors: []})
@@ -61,6 +61,7 @@ Item {
             p.repos = Array.isArray(p.repos) ? p.repos : []
             p.agents = Array.isArray(p.agents) ? p.agents : []
             p.paths = Array.isArray(p.paths) ? p.paths : []
+            p.open = p.open !== false
             p.job = p.job || {}
             p.label = p.label || "Untitled project"
             p.session = p.session || ""

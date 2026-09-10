@@ -73,7 +73,7 @@ Panel {
             if (p) { root.detail(p); root.open() }
         }
         function status(): string {
-            return JSON.stringify({opened: root.opened, version: "1.0.1", serviceVersion: root.service ? root.service.version || "legacy" : "missing", projects: root.projects.length,
+            return JSON.stringify({opened: root.opened, version: "1.1.0", serviceVersion: root.service ? root.service.version || "legacy" : "missing", projects: root.projects.length,
                 waiting: root.service ? root.service.waitingProjects : 0, busy: root.service ? root.service.busy : false,
                 error: root.service ? root.service.lastError : "Service not loaded", message: root.service ? root.service.message : "",
                 selected: root.selectedKey, scrollY: list.contentY, maxScroll: Math.max(0, list.contentHeight-list.height), previewReady: root.service ? root.service.previewReady : false,
@@ -91,7 +91,7 @@ Panel {
         bar: root.bar
         anchors.fill: parent
         text: "󰊢 " + (root.service ? String(root.service.waitingProjects) : "…")
-        tooltipText: "PR Hunter · " + root.projects.length + " Herdr projects\nClick to open PRs, issues and session handoffs"
+        tooltipText: "PR Hunter · " + root.projects.length + " projects\nClick to open PRs, issues and session handoffs"
         onPressed: root.toggle()
     }
     PopupCard {
@@ -114,7 +114,7 @@ Panel {
                     Text { text: "PR HUNTER"; color: root.ink; font.family: Style.font.family; font.pixelSize: 21; font.bold: true; font.letterSpacing: 1; width: parent.width - refreshButton.width }
                     Button { id: refreshButton; text: root.service && root.service.refreshing ? "Checking…" : "Refresh"; enabled: root.service && !root.service.refreshing && !root.service.busy; onClicked: root.service.refresh(true) }
                 }
-                Text { width: parent.width; text: root.current ? root.current.label + "  /  " + root.current.session : root.projects.length + " open projects · click a project to open its session and send work"; wrapMode: Text.Wrap; color: root.muted; font.pixelSize: 12; textFormat: Text.PlainText }
+                Text { width: parent.width; text: root.current ? root.current.label + "  /  " + root.current.session : root.projects.length + " projects · click to open Herdr or your default terminal"; wrapMode: Text.Wrap; color: root.muted; font.pixelSize: 12; textFormat: Text.PlainText }
                 Row {
                     spacing: 5
                     Button { text: "All remotes"; selected: root.scope === "all"; onClicked: root.scope = "all" }
@@ -123,6 +123,13 @@ Panel {
                     Button { visible: root.current !== null; text: "← Projects"; onClicked: { root.selectedKey = ""; root.showBrief = false } }
                 }
                 TextField { width: parent.width; visible: !root.current; placeholderText: "Find a project or repository…"; onTextChanged: root.search = text }
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    visible: !root.current
+                    TextField { id: addPath; width: parent.width - addButton.width - parent.spacing; placeholderText: "Add a project folder: /path/to/project" }
+                    Button { id: addButton; text: "Add project"; enabled: addPath.text.trim().length > 0 && root.service && !root.service.busy; onClicked: { root.service.act("add", "", "all", "", addPath.text); addPath.text = "" } }
+                }
                 Text {
                     width: parent.width
                     visible: text.length > 0
@@ -165,11 +172,11 @@ Panel {
                         spacing: 5
                         Text { width: parent.width; text: row.modelData.label; color: root.ink; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; textFormat: Text.PlainText }
                         Text { width: parent.width; text: row.modelData.error ? "GitHub unavailable · Details" : row.modelData.repos.length ? root.counts(row.modelData) + (row.modelData.upstream_count && root.scope === "all" ? " · includes upstream" : "") : "Repository needs mapping"; color: row.modelData.error ? Color.urgent : root.highlight; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
-                        Text { width: parent.width; text: row.modelData.job.status === "queued" ? "Queued · waiting for agent" : (row.modelData.job.status === "sent" ? "Last handoff: " + row.modelData.job.message : row.modelData.job.message) || row.modelData.agent_status + " · " + row.modelData.session; color: root.muted; font.pixelSize: 12; elide: Text.ElideRight; textFormat: Text.PlainText }
+                        Text { width: parent.width; text: !row.modelData.open ? "Saved project · click to open" : row.modelData.job.status === "queued" ? "Queued · waiting for agent" : (row.modelData.job.status === "sent" ? "Last handoff: " + row.modelData.job.message : row.modelData.job.message) || row.modelData.agent_status + " · " + row.modelData.session; color: root.muted; font.pixelSize: 12; elide: Text.ElideRight; textFormat: Text.PlainText }
                     }
                     Button { id: details; anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter } text: "Details"; onClicked: root.detail(row.modelData) }
                 }
-                Text { visible: list.count === 0; anchors.centerIn: parent; text: root.projects.length ? "No matching projects" : "Waiting for an open Herdr session…"; color: root.muted; font.pixelSize: 14 }
+                Text { visible: list.count === 0; anchors.centerIn: parent; text: root.projects.length ? "No matching projects" : "Add a project folder above, or open a project in Herdr."; color: root.muted; font.pixelSize: 14 }
             }
             Flickable {
                 id: detailScroll
@@ -195,6 +202,7 @@ Panel {
                             Text { width: parent.width; text: modelData.error || ((modelData.pullRequests ? modelData.pullRequests.totalCount : "?") + " PRs · " + (modelData.hasIssuesEnabled === false ? "issues disabled" : (modelData.issues ? modelData.issues.totalCount : "?") + " issues") + (modelData.checked ? " · checked " + new Date(modelData.checked * 1000).toLocaleTimeString() : "")); color: modelData.error ? Color.urgent : root.muted; font.pixelSize: 11; wrapMode: Text.Wrap; textFormat: Text.PlainText }
                         }
                     }
+                    Text { width: parent.width; text: root.current && root.current.paths.length ? "Project directory: " + root.current.paths[0] : "No directory saved — set a checkout below."; color: root.muted; font.pixelSize: 12; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
                     Text { width: parent.width; text: "Send to the existing agent"; color: root.ink; font.pixelSize: 13; font.bold: true }
                     Repeater {
                         model: root.current ? root.current.agents : []
@@ -205,13 +213,14 @@ Panel {
                             onClicked: root.selectedPane = modelData.pane_id
                         }
                     }
-                    Text { width: parent.width; visible: root.current !== null && !root.current.agents.length; text: "No supported local agent detected. Open the session to inspect it. Remote SSH terminals need a local Herdr agent connection before a handoff can be sent."; color: root.muted; font.pixelSize: 12; wrapMode: Text.Wrap }
+                    Text { width: parent.width; visible: root.current !== null && !root.current.agents.length; text: "Open the project in Herdr or a regular terminal. Work briefs require a detected local agent; ordinary shells only open the project directory."; color: root.muted; font.pixelSize: 12; wrapMode: Text.Wrap }
                     Flow {
                         width: parent.width
                         spacing: 6
                         Button { text: "Open & process"; enabled: root.current !== null && root.selectedPane.length > 0 && root.current.repos.length > 0 && root.service && !root.service.busy; onClicked: { root.close(); root.service.act("dispatch", root.current.key, root.scope, root.selectedPane, "") } }
                         Button { text: "Preview brief"; enabled: root.current !== null && root.current.repos.length > 0 && root.service && !root.service.busy; onClicked: { root.showBrief = true; root.service.act("preview", root.current.key, root.scope, root.selectedPane, "") } }
-                        Button { text: "Open session"; enabled: root.current !== null && root.service && !root.service.busy; onClicked: { root.close(); root.service.act("focus", root.current.key, root.scope, root.selectedPane, "") } }
+                        Button { text: "Open terminal"; enabled: root.current !== null && root.service && !root.service.busy; onClicked: { root.close(); root.service.act("terminal", root.current.key, root.scope, "", "") } }
+                        Button { text: "Open project"; enabled: root.current !== null && root.service && !root.service.busy; onClicked: { root.close(); root.service.act("focus", root.current.key, root.scope, root.selectedPane, "") } }
                         Button { text: "Acknowledge receipt"; visible: root.current !== null && ["sending", "uncertain"].indexOf(root.current.job.status) >= 0; enabled: root.service && !root.service.busy; onClicked: root.service.act("acknowledge", root.current.key, root.scope, "", "") }
                         Button { text: "Cancel queue"; visible: root.current !== null && root.current.job.status === "queued"; enabled: root.service && !root.service.busy; onClicked: root.service.act("cancel", root.current.key, root.scope, "", "") }
                     }
@@ -234,7 +243,7 @@ Panel {
             Text {
                 id: footer
                 anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
-                text: "PR Hunter 1.0.1 · GitHub every 5 min · projects every 15 sec\nReview, fix, test and push. Merges and issue closure need your decision."
+                text: "PR Hunter 1.1.0 · GitHub every 5 min · projects every 15 sec\nReview, fix, test and push. Merges and issue closure need your decision."
                 color: root.muted
                 font.pixelSize: 10
                 wrapMode: Text.Wrap

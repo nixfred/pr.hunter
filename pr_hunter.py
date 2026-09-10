@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -30,8 +31,8 @@ class Rejected(Failure):
     """A definite rejection from Herdr, unlike an ambiguous transport failure."""
 
 
-def run(argv, timeout=35):
-    p = subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
+def run(argv, timeout=35, env=None):
+    p = subprocess.run(argv, text=True, capture_output=True, timeout=timeout, env=env)
     if p.returncode:
         raise Failure((p.stderr.strip() or p.stdout.strip() or "Command failed")[:700])
     return p.stdout
@@ -149,9 +150,14 @@ def project_key(sock, wid):
     return hashlib.sha256((sock + "\0" + wid).encode()).hexdigest()[:24]
 
 
-def discover():
+def discover_live():
     cfg = read_json(CONFIG)
-    sessions = json.loads(run(["herdr", "session", "list", "--json"], 10))["sessions"]
+    try:
+        sessions = json.loads(run(["herdr", "session", "list", "--json"], 10))["sessions"]
+    except FileNotFoundError:
+        return [], []  # Herdr is optional; saved folders still work.
+    except (Failure, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
+        return [], ["Herdr: " + str(e)]
     projects, errors = [], []
     for session in sessions:
         if not session.get("running"):
@@ -198,7 +204,99 @@ def workspace_project(session, snap, w, cfg):
     return {"key": project_key(sock, wid), "label": w["label"],
                      "session": session["name"], "socket": sock, "workspace_id": wid,
                      "paths": paths, "repos": list(repos.values()), "agents": agents,
-                     "mapping_key": mapping_key, "focused": w.get("focused", False)}
+                     "mapping_key": mapping_key, "focused": w.get("focused", False), "open": True}
+
+
+def project_directory(project):
+    paths = project.get("paths") or [root for repo in project.get("repos", []) for root in repo.get("roots", [])]
+    if not paths:
+        raise Failure("No project directory is saved. Set its checkout in Details.")
+    directory = Path(paths[0]).expanduser().resolve()
+    if not directory.is_dir():
+        raise Failure(f"Project directory does not exist: {directory}. Update its checkout in Details.")
+    return str(directory)
+
+
+def directory_key(project):
+    # Identity comparison must work even when a saved directory is temporarily absent.
+    paths = project.get("paths") or []
+    return str(Path(paths[0]).expanduser().resolve()) if paths else ""
+
+
+def saved_record(project):
+    return {k: project.get(k) for k in ("key", "label", "session", "socket", "workspace_id", "paths", "mapping_key", "live_key")}
+
+
+def discover():
+    live, errors = discover_live()
+    with locked("projects.lock"):
+        registry_path = STATE / "projects.json"
+        if registry_path.exists():
+            known = read_json(registry_path).get("projects", {})
+        else:
+            # Upgrade existing installations without losing their last project list.
+            known = {p["key"]: saved_record(p) for p in read_json(STATE / "snapshot.json").get("projects", [])}
+        cfg = read_json(CONFIG)
+        for key, record in cfg.get("projects", {}).items():
+            known.setdefault(key, record)
+        for record in known.values():
+            mapped = cfg.get("mappings", {}).get(record.get("mapping_key"), {}).get("paths")
+            if mapped:
+                record["paths"] = mapped
+        used, result = set(), []
+        live_keys = {p["key"] for p in live}
+        for project in live:
+            raw_key = project["key"]
+            matches = [k for k, old in known.items() if k not in used and
+                       ((old.get("live_key") or k) == raw_key or
+                        ((old.get("live_key") or k) not in live_keys and directory_key(old) and
+                         directory_key(old) == directory_key(project) and old.get("session") == project["session"]))]
+            key = raw_key if raw_key in matches else (matches[0] if matches else raw_key)
+            project.update(key=key, live_key=raw_key, open=True)
+            known[key] = saved_record(project)
+            used.add(key)
+            result.append(project)
+        for key, old in known.items():
+            if key in used:
+                continue
+            project = {**old, "key": key, "open": False, "agents": [], "focused": False, "repos": []}
+            project["paths"] = cfg.get("mappings", {}).get(old.get("mapping_key"), {}).get("paths") or old.get("paths") or []
+            project["directory_error"] = ""
+            try:
+                project_directory(project)
+                repos = {}
+                for path in project["paths"]:
+                    for repo in git_repos(path):
+                        previous = repos.get(repo["name"].lower())
+                        if previous:
+                            previous["roots"] = sorted(set(previous["roots"] + repo["roots"]))
+                            previous["remotes"] = sorted(set(previous["remotes"] + repo["remotes"]))
+                        else:
+                            repos[repo["name"].lower()] = repo
+                project["repos"] = list(repos.values())
+            except (Failure, OSError, subprocess.TimeoutExpired) as e:
+                project["directory_error"] = str(e)
+            result.append(project)
+        write_json(registry_path, {"projects": known})
+    return result, errors
+
+
+def add_project(path):
+    if not path or not path.strip():
+        raise Failure("A project directory is required (--path).")
+    directory = project_directory({"paths": [path]})
+    projects, _ = discover()
+    existing = next((p for p in projects if directory_key(p) == directory), None)
+    if existing:
+        return {"message": "Project is already listed: " + existing["label"], "key": existing["key"]}
+    key = hashlib.sha256(("folder\0" + directory).encode()).hexdigest()[:24]
+    record = {"key": key, "label": Path(directory).name or directory, "session": "default",
+              "socket": None, "workspace_id": None, "paths": [directory], "mapping_key": "folder:" + key}
+    with locked("config.lock"):
+        cfg = read_json(CONFIG)
+        cfg.setdefault("projects", {})[key] = record
+        write_json(CONFIG, cfg)
+    return {"message": "Project added. Click it to open Herdr or your default terminal.", "key": key}
 
 
 def refresh_repos(names, force=False, check_account=False):
@@ -393,17 +491,131 @@ def focus_address(address):
         raise Failure("Could not focus the Herdr terminal")
 
 
+def process_snapshot():
+    processes = {}
+    for path in Path("/proc").glob("[0-9]*"):
+        try:
+            stat = (path / "stat").read_text().rsplit(") ", 1)[1].split()
+            processes[int(path.name)] = {"ppid": int(stat[1]), "pgrp": int(stat[2]), "tpgid": int(stat[5]),
+                "name": (path / "comm").read_text().strip(), "cwd": str((path / "cwd").resolve()),
+                "args": (path / "cmdline").read_bytes().decode(errors="replace").strip("\0").split("\0")}
+        except (OSError, ValueError, IndexError):
+            continue
+    return processes
+
+
+def launch_environment():
+    # A shell opened by PR Hunter must not inherit another Herdr pane's IDs/socket.
+    return {k: v for k, v in os.environ.items() if not k.startswith("HERDR_") or k == "HERDR_CONFIG_PATH"}
+
+
+def terminal_matches(directory, tag, clients, processes):
+    matches = []
+    for client in clients:
+        if not client.get("mapped") or tag not in (client.get("class"), client.get("initialClass")):
+            continue
+        for pid, proc in processes.items():
+            if proc.get("cwd") != directory or proc.get("pgrp", 0) <= 0 or proc.get("pgrp") != proc.get("tpgid"):
+                continue
+            seen = set()
+            while pid in processes and pid not in seen:
+                if pid == client.get("pid"):
+                    matches.append(client)
+                    break
+                seen.add(pid)
+                pid = processes[pid]["ppid"]
+            if client in matches:
+                break
+    return sorted(matches, key=lambda c: c.get("focusHistoryID", 999))
+
+
+def open_terminal(project):
+    directory = project_directory(project)
+    tag = "nixfred.pr-hunter-" + hashlib.sha256(project["key"].encode()).hexdigest()[:16]
+    with locked("terminal.lock"):
+        try:
+            clients = json.loads(run(["hyprctl", "clients", "-j"], 5))
+            matches = terminal_matches(directory, tag, clients, process_snapshot())
+            if matches:
+                focus_address(matches[0]["address"])
+                return "Opened the existing project terminal."
+        except (Failure, OSError, ValueError, subprocess.TimeoutExpired):
+            pass  # Opening a terminal works even without compositor integration.
+        recent = read_json(STATE / "terminal-launches.json")
+        if time.time() - recent.get(tag, 0) < 2:
+            return "The project terminal is opening."
+        if not shutil.which("xdg-terminal-exec"):
+            raise Failure("Install xdg-terminal-exec to launch your default terminal.")
+        child = subprocess.Popen(["xdg-terminal-exec", "--dir=" + directory, "--app-id=" + tag],
+                                 cwd=directory, env=launch_environment(), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            if child.wait(timeout=0.2):
+                raise Failure("The default terminal could not be opened.")
+        except subprocess.TimeoutExpired:
+            pass
+        recent = {k: v for k, v in recent.items() if time.time() - v < 30}
+        recent[tag] = time.time()
+        write_json(STATE / "terminal-launches.json", recent)
+    return "Opening the default terminal in " + directory
+
+
+def ensure_herdr_session(name, directory):
+    def running_session():
+        records = json.loads(run(["herdr", "session", "list", "--json"], 3, env=launch_environment()))["sessions"]
+        return next((r for r in records if r["name"] == name and r.get("running")), None)
+    existing = running_session()
+    if existing:
+        return existing["socket_path"]
+    # Start only the chosen persistent server. Workspace creation below supplies
+    # an explicit cwd, so a restored/default directory cannot determine the target.
+    child = subprocess.Popen(["herdr", "--session", name, "server"], cwd=directory, env=launch_environment(),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        existing = running_session()
+        if existing:
+            return existing["socket_path"]
+        if child.poll() is not None:
+            raise Failure("Herdr could not start the selected session.")
+        time.sleep(0.1)
+    raise Failure("Herdr session did not become ready in time.")
+
+
+def open_saved_project(project):
+    directory = project_directory(project)
+    if not shutil.which("herdr"):
+        return open_terminal(project)
+    if not shutil.which("xdg-terminal-exec"):
+        raise Failure("Install xdg-terminal-exec to open the project terminal.")
+    with locked("launch.lock"):
+        try:
+            name = project.get("session") or "default"
+            sock = ensure_herdr_session(name, directory)
+            snap = rpc(sock, "session.snapshot")["snapshot"]
+            session = {"name": name, "socket_path": sock}
+            candidates = [workspace_project(session, snap, w, read_json(CONFIG)) for w in snap["workspaces"]]
+            matching = [p for p in candidates if directory_key(p) == directory or
+                        directory in [root for r in p["repos"] for root in r["roots"]]]
+            existing = next((p for p in matching if p["workspace_id"] == project.get("workspace_id")), None)
+            if not existing and matching:
+                existing = matching[0]
+            if existing:
+                rpc(sock, "workspace.focus", {"workspace_id": existing["workspace_id"]})
+            else:
+                rpc(sock, "workspace.create", {"cwd": directory, "label": project["label"], "focus": True})
+            discover()  # Link the saved row to the authoritative new workspace identity.
+            warning = focus_window(name)
+            return warning or "Opened " + project["label"] + " in Herdr."
+        except (Failure, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
+            return "Herdr unavailable: " + str(e)[:200] + ". " + open_terminal(project)
+
+
 def focus_window(session):
     try:
         clients = json.loads(run(["hyprctl", "clients", "-j"], 5))
-        processes = {}
-        for path in Path("/proc").glob("[0-9]*"):
-            try:
-                stat = (path / "stat").read_text().split(") ", 1)[1].split()
-                processes[int(path.name)] = {"ppid": int(stat[1]), "name": (path / "comm").read_text().strip(),
-                                              "args": (path / "cmdline").read_bytes().decode(errors="replace").strip("\0").split("\0")}
-            except (OSError, ValueError, IndexError):
-                continue
+        processes = process_snapshot()
         matches = window_candidates(session, clients, processes)
         if matches:
             focus_address(matches[0]["address"])
@@ -411,7 +623,7 @@ def focus_window(session):
         # The server is already running (discovery verified it). Open a client
         # attached to that same session; never launch a replacement agent.
         child = subprocess.Popen(["xdg-terminal-exec", "--", "herdr", "session", "attach", session],
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 env=launch_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, start_new_session=True)
         try:
             code = child.wait(timeout=0.2)
@@ -425,6 +637,8 @@ def focus_window(session):
 
 
 def focus_project(project, agent=None):
+    if not project.get("open", True):
+        return open_saved_project(project)
     if agent:
         rpc(project["socket"], "agent.focus", {"target": agent["pane_id"]})
     else:
@@ -436,7 +650,7 @@ def find_project(key):
     projects, _ = discover()
     project = next((p for p in projects if p["key"] == key), None)
     if not project:
-        raise Failure("This project is no longer open. Refresh the list.")
+        raise Failure("This project is no longer listed. Refresh the list.")
     return project
 
 
@@ -491,7 +705,8 @@ def send_job(project, job, ledger):
 def process_queue(projects, discovery_incomplete=False):
     with locked("dispatch.lock"):
         ledger = read_json(STATE / "dispatch.json", {"sent": {}, "jobs": {}})
-        by_key = {p["key"]: p for p in projects}
+        # Remembered folders are launch targets, never destinations for old queued input.
+        by_key = {p["key"]: p for p in projects if p.get("open", True)}
         for key, job in ledger["jobs"].items():
             if job["status"] == "sending":
                 job.update(status="uncertain", message="Previous delivery was interrupted; inspect the session, then acknowledge the receipt.")
@@ -535,7 +750,7 @@ def scan(force=False):
         errors.append("GitHub: " + str(e))
     for p in projects:
         p["pr_count"], p["issue_count"], p["upstream_count"] = 0, 0, 0
-        p["error"] = ""
+        p["error"] = p.get("directory_error", "")
         for r in p["repos"]:
             data = cache["repos"].get(r["name"], {})
             r.update(data)
@@ -551,7 +766,7 @@ def scan(force=False):
         p["job"] = ledger["jobs"].get(p["key"], {})
         if p["job"].get("status") == "sending":
             p["job"]["message"] = "Delivery pending/uncertain; inspect the session before retrying."
-        p["agent_status"] = p["agents"][0].get("agent_status", "unknown") if len(p["agents"]) == 1 else ("choose agent" if p["agents"] else "no local agent")
+        p["agent_status"] = p["agents"][0].get("agent_status", "unknown") if len(p["agents"]) == 1 else ("choose agent" if p["agents"] else ("no local agent" if p.get("open", True) else "saved project · click to open"))
     projects.sort(key=lambda p: (not bool(p["pr_count"] + p["issue_count"]), p["label"].casefold(), p["session"]))
     result = {"projects": projects, "errors": errors, "login": cache.get("login", ""), "at": time.time()}
     write_json(STATE / "snapshot.json", result)
@@ -559,7 +774,13 @@ def scan(force=False):
 
 
 def action(key, command, scope="all", pane=None, path=None):
+    if command == "add":
+        return add_project(path)
     project = find_project(key)
+    if command == "terminal":
+        return {"message": open_terminal(project)}
+    if command == "dispatch" and not project.get("open", True):
+        return {"message": open_saved_project(project) + " Start or select an agent to send work."}
     if command == "focus":
         agent = next((a for a in project["agents"] if a["pane_id"] == pane), None) if pane else None
         return {"message": focus_project(project, agent) or "Opened " + project["label"]}
@@ -639,7 +860,7 @@ def action(key, command, scope="all", pane=None, path=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["scan", "dispatch", "preview", "focus", "cancel", "acknowledge", "map"])
+    parser.add_argument("command", choices=["scan", "dispatch", "preview", "focus", "terminal", "add", "cancel", "acknowledge", "map"])
     parser.add_argument("--key")
     parser.add_argument("--scope", choices=["all", "mine", "upstream"], default="all")
     parser.add_argument("--pane")
@@ -651,7 +872,7 @@ def main():
             with locked("scan.lock"):
                 result = scan(args.force)
         else:
-            if not args.key:
+            if not args.key and args.command != "add":
                 raise Failure("A project key is required")
             result = action(args.key, args.command, args.scope, args.pane, args.path)
         print(json.dumps(result, ensure_ascii=False))
