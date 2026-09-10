@@ -19,7 +19,8 @@ def edited_config(base):
         right = layout.setdefault('right', [])
         index = next((i for i, e in enumerate(right) if isinstance(e, dict) and e.get('zone') == 'outer'), len(right))
         right.insert(index, {'id': PLUGIN_ID, 'zone': 'outer'})
-    edited['disabledPlugins'] = [p for p in edited.get('disabledPlugins', []) if p != PLUGIN_ID]
+    if PLUGIN_ID in edited.get('disabledPlugins', []):
+        edited['disabledPlugins'] = [p for p in edited['disabledPlugins'] if p != PLUGIN_ID]
     return edited
 
 
@@ -58,11 +59,12 @@ def main():
             # Adding a plugin can hot-reload the shell after it accepted the
             # configuration but before the CLI's persistence probe. Re-read
             # live state to verify the result; never replay the old snapshot.
+            detail = result.stderr.strip() or result.stdout.strip() or f'Configuration apply exited with code {result.returncode}'
             retryable = ('changed since', 'changed during', 'not responding', 'returned non-zero exit status', 'timed out')
-            if not any(reason in result.stderr for reason in retryable):
-                raise SystemExit(result.stderr)
+            if not any(reason in detail for reason in retryable):
+                raise SystemExit(detail)
             if attempt == 2:
-                raise SystemExit('Configuration kept changing. Rerun the installer; no stale configuration was forced.')
+                raise SystemExit('Configuration could not be verified; no stale configuration was forced. ' + detail)
             time.sleep(.2)
     print(f'Installed {PLUGIN_ID}. Open with: omarchy-shell {PLUGIN_ID} open')
 

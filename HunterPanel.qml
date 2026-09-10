@@ -39,11 +39,17 @@ Panel {
         selectedKey = project.key
         selectedPane = project.agents.length === 1 ? project.agents[0].pane_id : ""
         showBrief = false
+        detailScroll.contentY = 0
         mappingPath.text = project.paths.length ? project.paths[0] : ""
     }
     function dispatch(project) {
         if (!service || service.busy) return
-        if (!project.repos.length || project.agents.length !== 1) { detail(project); return }
+        if (!project.repos.length || project.agents.length !== 1) {
+            detail(project)
+            root.close()
+            service.act("focus", project.key, scope, "", "")
+            return
+        }
         root.close()
         service.act("dispatch", project.key, scope, project.agents[0].pane_id, "")
     }
@@ -54,7 +60,7 @@ Panel {
             prs += repos[i].pullRequests ? repos[i].pullRequests.totalCount : 0
             issues += repos[i].issues ? repos[i].issues.totalCount : 0
         }
-        return prs + " PR" + (prs === 1 ? "" : "s") + "  ·  " + issues + " issue" + (issues === 1 ? "" : "s")
+        return prs + " open PR" + (prs === 1 ? "" : "s") + "  ·  " + issues + " open issue" + (issues === 1 ? "" : "s")
     }
     onOpenedChanged: if (opened && service) service.refresh(false)
     IpcHandler {
@@ -67,7 +73,7 @@ Panel {
             if (p) { root.detail(p); root.open() }
         }
         function status(): string {
-            return JSON.stringify({opened: root.opened, version: "1.0.0", projects: root.projects.length,
+            return JSON.stringify({opened: root.opened, version: "1.0.1", serviceVersion: root.service ? root.service.version || "legacy" : "missing", projects: root.projects.length,
                 waiting: root.service ? root.service.waitingProjects : 0, busy: root.service ? root.service.busy : false,
                 error: root.service ? root.service.lastError : "Service not loaded", message: root.service ? root.service.message : "",
                 selected: root.selectedKey, scrollY: list.contentY, maxScroll: Math.max(0, list.contentHeight-list.height), previewReady: root.service ? root.service.previewReady : false,
@@ -76,7 +82,7 @@ Panel {
         function refresh(): void { if (root.service) root.service.refresh(true) }
         function preview(key: string): void {
             var p = root.projects.find(function(p) { return p.key === key })
-            if (p) { root.detail(p); root.showBrief = true; root.open(); root.service.act("preview", key, root.scope, root.selectedPane, "") }
+            if (p && root.service) { root.detail(p); root.showBrief = true; root.open(); root.service.act("preview", key, root.scope, root.selectedPane, "") }
         }
         function scrollTo(position: real): void { root.selectedKey = ""; list.contentY = Math.max(0, Math.min(position, list.contentHeight - list.height)) }
     }
@@ -120,7 +126,7 @@ Panel {
                 Text {
                     width: parent.width
                     visible: text.length > 0
-                    text: root.service ? root.service.lastError || root.service.message : "Starting PR Hunter…"
+                    text: root.service ? [root.service.lastError, root.service.message].filter(function(s) { return s.length > 0 }).join("\n") : "Starting PR Hunter…"
                     color: root.service && root.service.lastError ? Color.urgent : root.highlight
                     wrapMode: Text.Wrap
                     font.pixelSize: 12
@@ -159,7 +165,7 @@ Panel {
                         spacing: 5
                         Text { width: parent.width; text: row.modelData.label; color: root.ink; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; textFormat: Text.PlainText }
                         Text { width: parent.width; text: row.modelData.error ? "GitHub unavailable · Details" : row.modelData.repos.length ? root.counts(row.modelData) + (row.modelData.upstream_count && root.scope === "all" ? " · includes upstream" : "") : "Repository needs mapping"; color: row.modelData.error ? Color.urgent : root.highlight; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
-                        Text { width: parent.width; text: row.modelData.job.status === "queued" ? "Queued · waiting for agent" : row.modelData.job.message || row.modelData.agent_status + " · " + row.modelData.session; color: root.muted; font.pixelSize: 12; elide: Text.ElideRight; textFormat: Text.PlainText }
+                        Text { width: parent.width; text: row.modelData.job.status === "queued" ? "Queued · waiting for agent" : (row.modelData.job.status === "sent" ? "Last handoff: " + row.modelData.job.message : row.modelData.job.message) || row.modelData.agent_status + " · " + row.modelData.session; color: root.muted; font.pixelSize: 12; elide: Text.ElideRight; textFormat: Text.PlainText }
                     }
                     Button { id: details; anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter } text: "Details"; onClicked: root.detail(row.modelData) }
                 }
@@ -204,9 +210,10 @@ Panel {
                         width: parent.width
                         spacing: 6
                         Button { text: "Open & process"; enabled: root.current !== null && root.selectedPane.length > 0 && root.current.repos.length > 0 && root.service && !root.service.busy; onClicked: { root.close(); root.service.act("dispatch", root.current.key, root.scope, root.selectedPane, "") } }
-                        Button { text: "Preview brief"; enabled: root.current !== null && root.selectedPane.length > 0 && root.current.repos.length > 0 && root.service && !root.service.busy; onClicked: { root.showBrief = true; root.service.act("preview", root.current.key, root.scope, root.selectedPane, "") } }
+                        Button { text: "Preview brief"; enabled: root.current !== null && root.current.repos.length > 0 && root.service && !root.service.busy; onClicked: { root.showBrief = true; root.service.act("preview", root.current.key, root.scope, root.selectedPane, "") } }
                         Button { text: "Open session"; enabled: root.current !== null && root.service && !root.service.busy; onClicked: { root.close(); root.service.act("focus", root.current.key, root.scope, root.selectedPane, "") } }
-                        Button { text: "Cancel queue"; visible: root.current !== null && root.current.job.status === "queued"; onClicked: root.service.act("cancel", root.current.key, root.scope, "", "") }
+                        Button { text: "Acknowledge receipt"; visible: root.current !== null && ["sending", "uncertain"].indexOf(root.current.job.status) >= 0; enabled: root.service && !root.service.busy; onClicked: root.service.act("acknowledge", root.current.key, root.scope, "", "") }
+                        Button { text: "Cancel queue"; visible: root.current !== null && root.current.job.status === "queued"; enabled: root.service && !root.service.busy; onClicked: root.service.act("cancel", root.current.key, root.scope, "", "") }
                     }
                     Text { width: parent.width; text: root.current ? root.current.job.message || "A click sends new or updated items. Busy agents wait until ready." : ""; color: root.muted; wrapMode: Text.Wrap; font.pixelSize: 12; textFormat: Text.PlainText }
                     Text { width: parent.width; text: "Repository checkout"; color: root.ink; font.pixelSize: 13; font.bold: true }
@@ -227,7 +234,7 @@ Panel {
             Text {
                 id: footer
                 anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
-                text: "PR Hunter 1.0.0 · GitHub every 5 min · projects every 15 sec\nReview, fix, test and push. Merges and issue closure need your decision."
+                text: "PR Hunter 1.0.1 · GitHub every 5 min · projects every 15 sec\nReview, fix, test and push. Merges and issue closure need your decision."
                 color: root.muted
                 font.pixelSize: 10
                 wrapMode: Text.Wrap

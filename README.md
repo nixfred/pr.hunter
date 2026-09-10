@@ -1,16 +1,28 @@
 # PR Hunter
 
+![PR Hunter overview with example projects and handoffs](docs/images/overview.svg)
+
 An Omarchy menu-bar plugin that watches GitHub PRs and issues for projects open
 in Herdr. Click a project to focus its **existing** agent session and send it a
 detailed work brief. It supports Claude, Codex and other agents recognized by
 Herdr. It never launches replacement agents.
 
+![Project discovery, GitHub monitoring and Herdr handoff flow](docs/images/workflow.svg)
+
 ## Use
 
 - Click the Git branch icon and project count in the bar.
-- Click a project row to open its Herdr session and process its new/updated items.
+- Click any project row to open its existing Herdr workspace. With one local
+  agent and a mapped repository, the click also assigns new/updated items.
+  Other rows still open the workspace; use Details to choose an agent or mapping.
+- If a terminal is already attached, it is focused. Otherwise the plugin opens
+  your default terminal attached to the same running Herdr session.
 - **All remotes / Your repos / Upstream** chooses the queue sent by a click.
   “Your repos” means repositories owned by the account authenticated in `gh`.
+- Counts are **open GitHub items**, not unfinished agent tasks. They fall when
+  PRs/issues close or merge, within five minutes or when you press Refresh.
+  The bar badge counts projects with open items across all remotes.
+  **Last handoff** is a historical receipt and does not shrink as items close.
 - **Details** shows each repository, counts, agent choices, the last handoff,
   and a **Preview brief** action. Preview fetches all open items without sending.
 - **Open session** focuses the session without assigning work.
@@ -31,11 +43,11 @@ separate user authorization. GitHub content is explicitly untrusted evidence.
 ## Install
 
 Requires Linux, Omarchy's plugin-capable shell, Herdr 0.8.2 (socket protocol 20),
-Python 3.10+, Git and an authenticated GitHub CLI (`gh auth status`). No Python
+Python 3.10+, Git, `xdg-terminal-exec` and an authenticated GitHub CLI (`gh auth status`). No Python
 packages, access tokens in settings, web server or separate system service.
 
 ```sh
-git clone git@github.com:nixfred/pr.hunter.git
+git clone https://github.com/nixfred/pr.hunter.git
 cd pr.hunter
 python3 install.py
 ```
@@ -65,7 +77,11 @@ automatically. It resolves Git roots from the panes' directories and de-duplicat
 GitHub fetch remotes. GitHub counts are cached for five minutes, with manual
 Refresh and a one-minute retry after errors. Errors remain visible; old counts
 are not silently replaced with zero. Clicks and previews fetch complete,
-paginated open-item lists. Draft PRs are included but the brief makes them review-only.
+paginated open-item lists. Partial repository failures are reported in the UI
+and brief; only successfully fetched items are assigned. A failed Herdr discovery
+pauses affected handoffs instead of treating a missing snapshot as a closed project.
+GitHub ownership is rechecked for handoffs and refreshed at least every five minutes.
+Draft PRs are included but the brief makes them review-only.
 
 All projects are visible, including unmapped projects and ordinary terminals.
 An SSH/tmux session without a locally detected Herdr agent (for example a remote
@@ -96,19 +112,21 @@ the agent is replaced. The same item version is not dispatched twice, even acros
 multiple open worktrees. Updated items are eligible again when explicitly clicked.
 
 Delivery receipts are written before sending. An ambiguous transport failure is
-shown as uncertain and **never automatically retried**. Inspect that session and
-the receipt before manually clearing an uncertain job in `dispatch.json`; do not
-erase receipts to force a retry unless you know the first prompt was not delivered.
+shown as uncertain and **never automatically retried**. Inspect that session, then use **Acknowledge receipt** to unblock new work.
+Acknowledgment keeps the recorded item versions protected against duplicate
+submission. It does not retry them or claim that the work completed.
 “Sent” means the prompt was accepted, not that the agent completed the work.
 
 Window focus uses the Herdr client's actual terminal process ancestry and its
-named session, not a guessed terminal title. When there is no matching attached
-window, the plugin reports that it could only select the Herdr space.
+named session, not a guessed terminal title. When no attached window is found, it launches `herdr session attach` in the
+default terminal. It uses the already-running server and never starts a new agent.
+If the compositor or terminal launcher is unavailable, it reports the focus limitation.
 
 ## Verification and command line
 
 ```sh
 python3 -m unittest discover -s tests -v
+python3 tests/check_qml.py    # real QML + fake helper, requires Quickshell
 python3 tests/check_herdr.py  # temporary Herdr server + harmless input recorder; requires cc
 omarchy plugin validate .
 python3 pr_hunter.py scan
@@ -123,3 +141,17 @@ services previously authorized queues. No work is assigned merely by installatio
 
 References: [Herdr socket API](https://herdr.dev/docs/socket-api/),
 [GitHub issue listing (includes pull requests)](https://docs.github.com/en/rest/issues/issues#list-repository-issues).
+
+## Audit
+
+Version 1.0.1 includes a [Grok audit and finding-by-finding resolution](docs/audits/2026-09-09.md),
+41 Python regression tests, an isolated native Herdr transport check, and an
+actual QML service test. Both README graphics are original SVG illustrations
+with example names and counts, not screenshots of private sessions.
+
+Herdr protocol 20 has no atomic “submit only to this occupant if still idle”
+parameter. PR Hunter checks identity and readiness immediately before prompting,
+but a replacement or state change in the small gap between those RPCs remains
+an upstream protocol limitation. Delivery records favor avoiding duplicate input.
+Briefs and deduplication records are retained locally; do not delete a brief while
+an agent may still need it. They are never included in the public repository.

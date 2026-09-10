@@ -1,4 +1,5 @@
 import copy
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -155,7 +156,7 @@ class BackendTests(unittest.TestCase):
             h.focus_address('0x123"; malicious()')
 
     def test_partial_github_error_retains_previous_count(self):
-        h.write_json(h.STATE / 'github.json', {'login': 'me', 'repos': {'me/repo': {
+        h.write_json(h.STATE / 'github.json', {'login': 'me', 'login_checked': h.time.time(), 'repos': {'me/repo': {
             'checked': 1, 'attempt': 1, 'pullRequests': {'totalCount': 9}}}})
         fake = type('Process', (), {'stdout': json.dumps({'data': {'r0': None}, 'errors': [{'path': ['r0'], 'message': 'not found'}]}), 'stderr': '', 'returncode': 1})()
         with patch.object(h.subprocess, 'run', return_value=fake):
@@ -179,6 +180,206 @@ class BackendTests(unittest.TestCase):
             result = h.action('key', 'dispatch')
             self.assertIn('No new', result['message'])
             send.assert_not_called()
+
+    def test_incomplete_discovery_preserves_queued_handoff(self):
+        h.write_json(h.STATE / 'dispatch.json', self.ledger)
+        with patch.object(h, 'send_job') as send:
+            result = h.process_queue([], discovery_incomplete=True)
+        self.assertEqual(result['jobs']['key']['status'], 'queued')
+        self.assertIn('complete Herdr scan', result['jobs']['key']['message'])
+        send.assert_not_called()
+
+    def test_git_timeout_only_omits_affected_project(self):
+        session = {'name': 'default', 'socket_path': '/test.sock', 'running': True}
+        snap = {'workspaces': [{'workspace_id': 'w1', 'label': 'slow'}, {'workspace_id': 'w2', 'label': 'good'}],
+                'panes': [], 'agents': []}
+        with patch.object(h, 'run', return_value=json.dumps({'sessions': [session]})), \
+             patch.object(h, 'rpc', return_value={'snapshot': snap}), \
+             patch.object(h, 'workspace_project', side_effect=[h.subprocess.TimeoutExpired(['git'], 5), self.project]):
+            projects, errors = h.discover()
+        self.assertEqual(projects, [self.project])
+        self.assertEqual(len(errors), 1)
+
+    def test_preview_does_not_require_agent_or_focus(self):
+        project = {**self.project, 'agents': []}
+        with patch.object(h, 'find_project', return_value=project), \
+             patch.object(h, 'refresh_repos', return_value={'login': 'me'}), \
+             patch.object(h, 'open_items', return_value=[self.item]), \
+             patch.object(h, 'focus_project') as focus:
+            result = h.action('key', 'preview')
+        self.assertEqual(result['items'], [self.item])
+        focus.assert_not_called()
+
+    def test_focus_unmapped_workspace_without_agent(self):
+        project = {**self.project, 'agents': [], 'repos': []}
+        with patch.object(h, 'find_project', return_value=project), \
+             patch.object(h, 'focus_project', return_value='') as focus, \
+             patch.object(h, 'refresh_repos') as github:
+            h.action('key', 'focus')
+        focus.assert_called_once_with(project, None)
+        github.assert_not_called()
+
+    def test_dispatch_joins_session_even_when_github_fails(self):
+        with patch.object(h, 'find_project', return_value=self.project), \
+             patch.object(h, 'refresh_repos', side_effect=h.Failure('offline')), \
+             patch.object(h, 'focus_project', return_value='') as focus:
+            with self.assertRaisesRegex(h.Failure, 'offline'):
+                h.action('key', 'dispatch')
+        focus.assert_called_once_with(self.project, self.agent)
+
+    def test_dispatch_rechecks_mapping_after_network_fetch(self):
+        changed = copy.deepcopy(self.project)
+        changed['repos'][0]['roots'] = ['/changed']
+        with patch.object(h, 'find_project', side_effect=[self.project, changed]), \
+             patch.object(h, 'refresh_repos', return_value={'login': 'me'}), \
+             patch.object(h, 'open_items', return_value=[self.item]), \
+             patch.object(h, 'focus_project', return_value=''), \
+             patch.object(h, 'send_job') as send:
+            with self.assertRaisesRegex(h.Failure, 'mapping changed'):
+                h.action('key', 'dispatch')
+        send.assert_not_called()
+
+    def test_dispatch_rechecks_agent_after_network_fetch(self):
+        changed = copy.deepcopy(self.project)
+        changed['agents'][0]['terminal_id'] = 'replacement'
+        with patch.object(h, 'find_project', side_effect=[self.project, changed]), \
+             patch.object(h, 'refresh_repos', return_value={'login': 'me'}), \
+             patch.object(h, 'open_items', return_value=[self.item]), \
+             patch.object(h, 'focus_project', return_value=''), \
+             patch.object(h, 'send_job') as send:
+            with self.assertRaisesRegex(h.Failure, 'Agent changed'):
+                h.action('key', 'dispatch')
+        send.assert_not_called()
+
+    def test_pending_job_is_persisted_before_transport_check(self):
+        def unavailable(*args):
+            saved = h.read_json(h.STATE / 'dispatch.json')
+            self.assertEqual(saved['jobs']['key']['status'], 'queued')
+            raise h.Failure('offline')
+        with patch.object(h, 'find_project', return_value=self.project), \
+             patch.object(h, 'refresh_repos', return_value={'login': 'me'}), \
+             patch.object(h, 'open_items', return_value=[self.item]), \
+             patch.object(h, 'focus_project', return_value=''), \
+             patch.object(h, 'send_job', side_effect=unavailable):
+            with self.assertRaisesRegex(h.Failure, 'offline'):
+                h.action('key', 'dispatch')
+        self.assertEqual(h.read_json(h.STATE / 'dispatch.json')['jobs']['key']['status'], 'queued')
+
+    def test_account_switch_invalidates_other_accounts_cache(self):
+        h.write_json(h.STATE / 'github.json', {'login': 'old', 'login_checked': h.time.time(),
+                     'repos': {'old/private': {'pullRequests': {'totalCount': 42}}}})
+        with patch.object(h, 'run', return_value='new'):
+            cache = h.refresh_repos([], check_account=True)
+        self.assertEqual(cache['login'], 'new')
+        self.assertEqual(cache['repos'], {})
+
+    def test_queue_validates_roots_and_remotes(self):
+        self.job['project_signature'] = h.project_signature(self.project)
+        h.write_json(h.STATE / 'dispatch.json', self.ledger)
+        project = copy.deepcopy(self.project)
+        project['repos'][0]['remotes'] = ['upstream']
+        with patch.object(h, 'send_job') as send:
+            result = h.process_queue([project])
+        self.assertEqual(result['jobs']['key']['status'], 'cancelled')
+        send.assert_not_called()
+
+    def test_private_brief_is_atomic_and_owner_only(self):
+        path = h.STATE / 'briefs' / 'private.md'
+        h.write_private(path, 'a private brief')
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(path.read_text(), 'a private brief')
+        h.write_private(path, 'replacement')
+        self.assertEqual(path.read_text(), 'replacement')
+        self.assertEqual(list(path.parent.glob('*.tmp')), [])
+
+    def test_interrupted_send_becomes_uncertain_and_can_be_acknowledged(self):
+        self.job['status'] = 'sending'
+        self.ledger['sent'][h.version(self.item)] = {'job': 'job'}
+        h.write_json(h.STATE / 'dispatch.json', self.ledger)
+        result = h.process_queue([self.project])
+        self.assertEqual(result['jobs']['key']['status'], 'uncertain')
+        with patch.object(h, 'find_project', return_value=self.project):
+            result = h.action('key', 'acknowledge')
+        self.assertIn('remain protected', result['message'])
+        saved = h.read_json(h.STATE / 'dispatch.json')
+        self.assertEqual(saved['jobs']['key']['status'], 'acknowledged')
+        self.assertIn(h.version(self.item), saved['sent'])
+
+    def test_cancel_nonqueued_does_not_report_old_success(self):
+        self.job.update(status='sent', message='Sent 1 item')
+        h.write_json(h.STATE / 'dispatch.json', self.ledger)
+        with patch.object(h, 'find_project', return_value=self.project):
+            result = h.action('key', 'cancel')
+        self.assertIn('Nothing was changed', result['message'])
+        self.assertEqual(h.read_json(h.STATE / 'dispatch.json')['jobs']['key']['status'], 'sent')
+
+    def test_partial_fetch_preserves_available_items_and_reports_gap(self):
+        repos = [{'name': 'me/good'}, {'name': 'me/unavailable'}]
+        def get(name):
+            if name.endswith('unavailable'):
+                raise h.Failure('offline')
+            return [self.item]
+        with patch.object(h, 'open_items', side_effect=get):
+            items, errors = h.fetch_items(repos)
+        self.assertEqual(items, [self.item])
+        self.assertEqual(errors, ['me/unavailable: offline'])
+        self.assertIn('No items from them were assigned', h.unavailable_text(errors))
+
+    def test_map_requires_path(self):
+        with patch.object(h, 'find_project', return_value=self.project), patch.object(h, 'git_repos') as git:
+            with self.assertRaisesRegex(h.Failure, 'path is required'):
+                h.action('key', 'map')
+        git.assert_not_called()
+
+    def test_stopped_session_is_incomplete_discovery(self):
+        with patch.object(h, 'run', return_value=json.dumps({'sessions': [{'name': 'default', 'running': False}]})):
+            projects, errors = h.discover()
+        self.assertEqual(projects, [])
+        self.assertIn('paused', errors[0])
+
+    def test_named_session_with_equals_matches_exact_terminal(self):
+        clients = [{'pid': 10, 'address': 'right', 'mapped': True}]
+        processes = {10: {'ppid': 1, 'name': 'foot', 'args': ['foot']},
+                     11: {'ppid': 10, 'name': 'herdr', 'args': ['herdr', '--session=work']}}
+        self.assertEqual(h.window_candidates('work', clients, processes)[0]['address'], 'right')
+        self.assertEqual(h.window_candidates('default', clients, processes), [])
+
+    def test_unattached_session_launches_only_existing_session_client(self):
+        with patch.object(h, 'run', return_value='[]'), \
+             patch.object(h.Path, 'glob', return_value=[]), \
+             patch.object(h.subprocess, 'Popen') as spawn:
+            spawn.return_value.wait.return_value = 0
+            result = h.focus_window('work')
+        self.assertEqual(spawn.call_args.args[0], ['xdg-terminal-exec', '--', 'herdr', 'session', 'attach', 'work'])
+        self.assertIn('existing Herdr session', result)
+
+    def test_missing_draft_state_is_unknown_not_false(self):
+        row = {'number': 1, 'title': 'PR', 'html_url': 'url', 'updated_at': 'now', 'pull_request': {'url': 'api'}}
+        with patch.object(h, 'run', return_value=json.dumps([[row]])):
+            self.assertIsNone(h.open_items('me/repo')[0]['draft'])
+
+    def test_rpc_only_known_preinput_prompt_rejection_is_definite(self):
+        for code, expected in [('agent_blocked', h.Rejected), ('internal_error', h.Failure)]:
+            request = {}
+            with patch.object(h.socket, 'socket') as factory:
+                conn = factory.return_value.__enter__.return_value
+                conn.sendall.side_effect = lambda raw: request.update(json.loads(raw))
+                conn.makefile.side_effect = lambda mode: io.BytesIO((json.dumps({
+                    'id': request['id'], 'error': {'code': code, 'message': 'failed'}}) + '\n').encode())
+                with self.assertRaises(expected) as caught:
+                    h.rpc('/test', 'agent.prompt', {'target': 'w1:p1', 'text': 'test'})
+                if code == 'internal_error':
+                    self.assertNotIsInstance(caught.exception, h.Rejected)
+
+    def test_malformed_snapshot_does_not_hide_healthy_session(self):
+        sessions = [{'name': 'bad', 'running': True, 'socket_path': '/bad'},
+                    {'name': 'good', 'running': True, 'socket_path': '/good'}]
+        good = {'workspaces': [{'workspace_id': 'w1', 'label': 'good'}], 'panes': [], 'agents': []}
+        with patch.object(h, 'run', return_value=json.dumps({'sessions': sessions})), \
+             patch.object(h, 'rpc', side_effect=[{'snapshot': {}}, {'snapshot': good}]):
+            projects, errors = h.discover()
+        self.assertEqual([p['label'] for p in projects], ['good'])
+        self.assertEqual(len(errors), 1)
 
 
 if __name__ == '__main__':

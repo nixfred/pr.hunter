@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="420" viewBox="0 0 1120 420" role="img" aria-labelledby="title desc">
+<title id="title">How PR Hunter turns a click into a work brief</title><desc id="desc">Discover local Herdr projects every 15 seconds and check GitHub every five minutes. A project click opens its workspace. A selected ready agent receives the brief; a busy agent waits in a queue. Without a local agent, only the session opens.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#6cae9c" stroke-width="1.5"/></marker></defs>
+<rect width="1120" height="420" rx="20" fill="#101b2c"/>
+<g font-family="Inter,DejaVu Sans,Arial,sans-serif"><text x="36" y="49" fill="#e8f0fc" font-size="24" font-weight="700">From a project click to a precise handoff</text>
+<g fill="#192c42" stroke="#355068"><rect x="36" y="87" width="235" height="111" rx="12"/><rect x="316" y="87" width="235" height="111" rx="12"/><rect x="596" y="87" width="235" height="111" rx="12"/></g>
+<g fill="#87edc6" font-size="12" font-weight="700" letter-spacing="1.5"><text x="54" y="111">01 / DISCOVER</text><text x="334" y="111">02 / MONITOR</text><text x="614" y="111">03 / CLICK</text></g>
+<g fill="#edf4ff" font-size="18" font-weight="700"><text x="54" y="142">Open Herdr projects</text><text x="334" y="142">GitHub PRs + issues</text><text x="614" y="142">Open the workspace</text></g>
+<g fill="#a4b8d0" font-size="13"><text x="54" y="168">New projects included</text><text x="54" y="186">Discovery every 15 seconds</text><text x="334" y="168">Choose your repository scope</text><text x="334" y="186">Counts every 5 min + Refresh</text><text x="614" y="168">Use its existing agent</text><text x="614" y="186">Choose a recipient if needed</text></g>
+<g stroke="#6cae9c" stroke-width="2" fill="none" marker-end="url(#arrow)"><path d="M271 142H306"/><path d="M551 142H586"/><path d="M831 142H879V260H831"/><path d="M715 198V247"/></g>
+<rect x="596" y="257" width="235" height="98" rx="12" fill="#174036" stroke="#36765e"/><text x="614" y="285" fill="#8df0c8" font-size="17" font-weight="700">Ready → send brief</text><text x="614" y="311" fill="#c3ddcf" font-size="13">Review · triage · fix · test</text><text x="614" y="334" fill="#c3ddcf" font-size="13">Commit/push suitable changes</text>
+<text x="900" y="154" fill="#efd999" font-size="15" font-weight="700">Busy?</text><text x="900" y="178" fill="#a4b8d0" font-size="13">Queue until ready</text><text x="900" y="198" fill="#a4b8d0" font-size="13">or cancel</text>
+<text x="36" y="285" fill="#d0dcef" font-size="16" font-weight="700">No local agent? The workspace still opens.</text><text x="36" y="313" fill="#99aec8" font-size="14">Briefs list every selected item and its next steps.</text><text x="36" y="338" fill="#99aec8" font-size="14">A sent receipt records delivery, not completion.</text>
+<text x="36" y="390" fill="#7e94af" font-size="12">Open counts fall when items close or merge. Merges, closures, releases and GitHub messages need separate authorization.</text>
+</g></svg>

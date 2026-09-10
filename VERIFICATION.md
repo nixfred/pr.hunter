@@ -1,5 +1,19 @@
 # Verification
 
+## Version 1.0.1
+
+See the [Grok audit and resolution](docs/audits/2026-09-09.md). The updated release
+passes 41 Python tests, the real QML service test with an isolated fake helper,
+and the native isolated Herdr transport test. The installed panel and service both
+report 1.0.1, discover 24 live projects and report no scan errors. An unmapped
+project was opened in its existing Herdr workspace with no prompt sent; prior
+focus was restored. The shell needed a reload to clear its QML cache. Fresh
+live and saved configuration matched before/after, with all bar settings/order
+preserved. Both README SVGs were rendered
+and visually inspected. No live agent receives test prompts.
+
+## Initial installation (1.0.0)
+
 Verified on 2026-09-09 with Herdr 0.8.2 / protocol 20 and the installed Omarchy shell.
 
 - 17 backend regression tests pass: remote parsing, pagination/PR classification,

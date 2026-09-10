@@ -2,3 +2,16 @@ __pycache__/
 *.pyc
 .pytest_cache/
 verification/local/
+
+# Local credentials, agent metadata and diagnostics must stay private.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+.grok/
+.agents/
+.codex/
