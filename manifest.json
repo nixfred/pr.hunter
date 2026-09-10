@@ -7,6 +7,6 @@
   "description": "Live GitHub queues for open Herdr projects, with detailed handoffs to their existing agents.",
   "repository": "https://github.com/nixfred/pr.hunter",
   "kinds": ["service", "bar-widget"],
-  "entryPoints": {"service": "Service.qml", "barWidget": "Panel.qml"},
+  "entryPoints": {"service": "Service.qml", "barWidget": "HunterPanel.qml"},
   "barWidget": {"displayName": "PR Hunter", "description": "Open projects, PRs, issues and agent handoffs", "category": "Development", "allowMultiple": false}
 }

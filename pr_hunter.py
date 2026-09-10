@@ -306,6 +306,18 @@ def window_candidates(session, clients, processes):
                   key=lambda c: c.get("focusHistoryID", 999))
 
 
+def focus_address(address):
+    if not re.fullmatch(r"0x[0-9a-fA-F]+", address):
+        raise Failure("Invalid terminal window address")
+    info = json.loads(run(["hyprctl", "version", "-j"], 5))
+    match = re.search(r"(\d+)\.(\d+)", info.get("tag", info.get("version", "")))
+    lua = bool(match and (int(match[1]), int(match[2])) >= (0, 56))
+    dispatch = [f'hl.dsp.focus({{ window = "address:{address}" }})'] if lua else ["focuswindow", "address:" + address]
+    result = run(["hyprctl", "dispatch", *dispatch], 5)
+    if "error" in result.lower():
+        raise Failure("Could not focus the Herdr terminal")
+
+
 def focus_window(session):
     try:
         clients = json.loads(run(["hyprctl", "clients", "-j"], 5))
@@ -319,7 +331,7 @@ def focus_window(session):
                 continue
         matches = window_candidates(session, clients, processes)
         if matches:
-            run(["hyprctl", "dispatch", "focuswindow", "address:" + matches[0]["address"]], 5)
+            focus_address(matches[0]["address"])
             return ""
         return "Herdr space selected; no attached local terminal window was found."
     except (Failure, OSError, subprocess.TimeoutExpired) as e:

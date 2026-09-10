@@ -146,6 +146,14 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(h.window_candidates('work', clients, processes)[0]['address'], 'right')
         self.assertEqual(h.window_candidates('default', clients, processes), [])
 
+    def test_focus_supports_lua_and_legacy_hyprland(self):
+        for tag, expected in [('v0.56.0', 'hl.dsp.focus'), ('v0.54.0', 'focuswindow')]:
+            with patch.object(h, 'run', side_effect=[json.dumps({'tag': tag}), 'ok']) as run:
+                h.focus_address('0x123abc')
+            self.assertIn(expected, run.call_args.args[0][2])
+        with self.assertRaises(h.Failure):
+            h.focus_address('0x123"; malicious()')
+
     def test_partial_github_error_retains_previous_count(self):
         h.write_json(h.STATE / 'github.json', {'login': 'me', 'repos': {'me/repo': {
             'checked': 1, 'attempt': 1, 'pullRequests': {'totalCount': 9}}}})

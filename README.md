@@ -43,7 +43,9 @@ python3 install.py
 The installer links this checkout into `~/.config/omarchy/plugins/nixfred.pr-hunter`
 and adds one visible bar entry. It uses a **fresh live** configuration snapshot
 and a compare-and-set update, retaining all other entries and their order.
-Keep the checkout in place. Plugin code reloads in the running shell.
+Keep the checkout in place. Python changes are picked up on the next scan.
+After QML edits, rescan with `omarchy-shell shell rescanPlugins`; shell builds
+that retain QML's component cache may require a shell reload for same-file edits.
 
 Disable without removing code or state:
 
