@@ -33,6 +33,17 @@ work brief. It supports Claude, Codex and other agents recognized by Herdr.
   its foreground process still occupies that directory and its window is identifiable.
 - **All remotes / Your repos / Upstream** chooses the queue sent by a click.
   “Your repos” means repositories owned by the account authenticated in `gh`.
+- A click never fails silently. Whatever it did — sent a brief, found nothing new,
+  or only opened the session — arrives as a desktop notification, because the panel
+  closes before its result comes back. Every action is also appended to
+  `actions.log` in the state directory for later diagnosis.
+- A row that cannot be fed says so before you click it: no repository mapped, no
+  agent running, or several agents to choose between. Where a checkout can be
+  guessed from the workspace name, the row names it and Details pre-fills it;
+  nothing is mapped without pressing Save mapping.
+- **Send again** in Details re-delivers a brief the agent received but never acted
+  on. It releases only that project's own delivery receipts. An ordinary click
+  still never resends work that was already delivered.
 - Counts are **open GitHub items**, not unfinished agent tasks. They fall when
   PRs/issues close or merge, within five minutes or when you press Refresh.
   The bar badge counts projects with open items across all remotes.

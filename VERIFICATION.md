@@ -1,5 +1,22 @@
 # Verification
 
+## Clicks that could not feed work (2026-09-11)
+
+- 62 Python tests and the QML service check pass, including new coverage for the
+  resend path, the scope hint, the focus explanations, the action log and the
+  checkout suggestion. The QML check now asserts that a panel-closing command
+  raises exactly one outcome notification and that Send again reaches the helper
+  as `--force`.
+- The native Herdr transport check and the isolated launch check still pass. No
+  live agent received a test prompt: the dispatch path was exercised with delivery
+  stubbed, against a copy of the real state directory.
+- Diagnosed live on vic. Of 16 listed projects, 11 dispatch on click and 5 could
+  only ever focus, because no GitHub repository resolves from their panes' working
+  directories. Two of those sit in a non-repository directory, one is a local-only
+  repository with no remote. That is the reported "opens the session but feeds
+  nothing", and those rows now say so before a click and suggest a checkout where
+  one can be found. Verified in a screenshot of the live panel.
+
 ## Version 1.1.0
 
 - 56 Python regression tests cover the existing dispatch protections plus saved

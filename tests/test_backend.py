@@ -178,7 +178,8 @@ class BackendTests(unittest.TestCase):
             self.ledger['jobs'] = {}
             h.write_json(h.STATE / 'dispatch.json', self.ledger)
             result = h.action('key', 'dispatch')
-            self.assertIn('No new', result['message'])
+            self.assertIn('Nothing new to send', result['message'])
+            self.assertIn('Send again', result['message'])
             send.assert_not_called()
 
     def test_incomplete_discovery_preserves_queued_handoff(self):
@@ -404,6 +405,69 @@ class BackendTests(unittest.TestCase):
         self.assertEqual([r['name'] for r in busy['repos']], ['me/large', 'me/small'])
         self.assertEqual(busy['pr_count'] + busy['issue_count'], 8)
         self.assertEqual(result['projects'][1]['pr_count'] + result['projects'][1]['issue_count'], 0)
+
+    def test_send_again_releases_only_this_project_receipts(self):
+        self.ledger['sent'] = {h.version(self.item): {'job': 'old'}, 'other/repo#9@x': {'job': 'old'}}
+        self.ledger['jobs'] = {}
+        h.write_json(h.STATE / 'dispatch.json', self.ledger)
+        with patch.object(h, 'find_project', return_value=self.project), \
+             patch.object(h, 'refresh_repos', return_value={'login': 'me'}), \
+             patch.object(h, 'open_items', return_value=[self.item]), \
+             patch.object(h, 'focus_project', return_value=''), \
+             patch.object(h, 'send_job') as send:
+            h.action('key', 'dispatch', force=True)
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[1]['items'], [self.item])
+        self.assertIn('other/repo#9@x', h.read_json(h.STATE / 'dispatch.json')['sent'])
+
+    def test_empty_scope_names_the_scope_holding_the_work(self):
+        project = {**self.project, 'repos': [
+            {'name': 'me/fork', 'roots': ['/test'], 'remotes': ['origin']},
+            {'name': 'them/upstream', 'roots': ['/test'], 'remotes': ['upstream']}]}
+        cache = {'login': 'me', 'repos': {
+            'me/fork': {'pullRequests': {'totalCount': 0}, 'issues': {'totalCount': 0}},
+            'them/upstream': {'pullRequests': {'totalCount': 28}, 'issues': {'totalCount': 68}}}}
+        self.ledger['jobs'] = {}
+        h.write_json(h.STATE / 'dispatch.json', self.ledger)
+        with patch.object(h, 'find_project', return_value=project), \
+             patch.object(h, 'refresh_repos', return_value=cache), \
+             patch.object(h, 'open_items', return_value=[]), \
+             patch.object(h, 'focus_project', return_value=''), \
+             patch.object(h, 'send_job') as send:
+            result = h.action('key', 'dispatch', 'mine')
+        send.assert_not_called()
+        self.assertIn('96 open items', result['message'])
+        self.assertIn('upstream', result['message'])
+
+    def test_focus_explains_why_no_work_was_sent(self):
+        cases = [({'agents': []}, 'No local agent is running'),
+                 ({'repos': []}, 'No GitHub repository is mapped'),
+                 ({'agents': [self.agent, {**self.agent, 'pane_id': 'w1:p2'}]}, 'Several agents')]
+        for override, expected in cases:
+            with patch.object(h, 'find_project', return_value={**self.project, **override}), \
+                 patch.object(h, 'focus_project', return_value=''):
+                result = h.action('key', 'focus')
+            self.assertIn(expected, result['message'])
+
+    def test_every_action_is_logged_for_diagnosis(self):
+        args = type('Args', (), {'command': 'dispatch', 'key': 'key', 'scope': 'mine',
+                                 'pane': 'w1:p1', 'force': False})()
+        h.log_action(args, h.time.time(), result={'message': 'Sent 3 items', 'status': 'sent'})
+        h.log_action(args, h.time.time(), error='Agent changed while preparing work')
+        rows = [json.loads(l) for l in (h.STATE / 'actions.log').read_text().splitlines()]
+        self.assertEqual([r['message'] for r in rows], ['Sent 3 items', None])
+        self.assertEqual(rows[1]['error'], 'Agent changed while preparing work')
+        self.assertEqual(rows[0]['scope'], 'mine')
+
+    def test_checkout_suggestion_only_offers_a_real_repository(self):
+        home = Path(self.tmp.name)
+        good = home / 'Projects' / 'site.example.com'
+        good.mkdir(parents=True)
+        with patch.object(h.Path, 'home', staticmethod(lambda: home)), \
+             patch.object(h, 'git_repos', side_effect=lambda path: [{'name': 'me/site'}] if path == str(good) else []):
+            self.assertEqual(h.suggest_checkout({'label': 'site.example.com', 'paths': [str(home)]}), str(good))
+            self.assertEqual(h.suggest_checkout({'label': 'Now Playing', 'paths': [str(home)]}), '')
+            self.assertEqual(h.suggest_checkout({'label': '../etc', 'paths': [str(home)]}), '')
 
 
 if __name__ == '__main__':

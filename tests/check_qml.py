@@ -29,7 +29,7 @@ else:
         (temp / 'shell.qml').write_text('''import QtQuick
 import Quickshell
 ShellRoot {
-    Service { id: bridge; helperTimeout: 2000 }
+    Service { id: bridge; helperTimeout: 2000; notifications: false }
     property int stage: 0
     Timer {
         interval: 40; running: true; repeat: true
@@ -41,11 +41,18 @@ ShellRoot {
             } else if (stage === 1 && bridge.message === "Action accepted" && !bridge.refreshing && !bridge.busy) {
                 if (bridge.lastError !== "" || bridge.projects.length !== 1 || bridge.projects[0].repos.length !== 0)
                     throw new Error("Snapshot normalization or stdio failed")
+                if (bridge.lastAnnouncement !== "")
+                    throw new Error("A panel-open command must not raise a notification")
+                bridge.act("dispatch", "key", "all", "pane", "", true)
+                stage = 2
+            } else if (stage === 2 && !bridge.busy && bridge.message === "Action accepted") {
+                if (bridge.lastAnnouncement !== "Action accepted")
+                    throw new Error("A closing command never announced its outcome")
                 bridge.helperTimeout = 150
                 bridge.act("hang", "key", "all", "", "")
-                stage = 2
-            } else if (stage === 2 && bridge.message.indexOf("timed out") >= 0) {
-                console.log("PASS: QML decoded path, serialized action, option value, normalized snapshot, stdio and watchdog")
+                stage = 3
+            } else if (stage === 3 && bridge.message.indexOf("timed out") >= 0) {
+                console.log("PASS: QML decoded path, serialized action, option value, normalized snapshot, outcome notification, stdio and watchdog")
                 Qt.quit()
             }
         }
@@ -63,6 +70,8 @@ ShellRoot {
         calls = [json.loads(line) for line in (temp / 'calls.jsonl').read_text().splitlines()]
         assert [c[0] for c in calls[:3]] == ['scan', 'map', 'scan'], calls
         assert '--path=-h' in calls[1], calls
+        sent = next(c for c in calls if c[0] == 'dispatch')
+        assert '--force' in sent and '--pane=pane' in sent, calls
         print(next(line for line in output.splitlines() if 'PASS: QML' in line))
 
 
