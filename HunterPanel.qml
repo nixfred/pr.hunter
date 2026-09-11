@@ -21,6 +21,9 @@ Panel {
     readonly property var current: projects.find(function(p) { return p.key === root.selectedKey }) || null
     readonly property var filtered: projects.filter(function(p) {
         return (p.label + " " + p.repos.map(function(r) { return r.name }).join(" ")).toLowerCase().indexOf(root.search.toLowerCase()) >= 0
+    }).filter(function(p) { return root.search.length > 0 || root.attention(p) !== 0 }).sort(function(a, b) {
+        var d = root.attention(b) - root.attention(a)
+        return d !== 0 ? d : a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1
     })
     readonly property color ink: Color.popups.text
     readonly property color muted: Qt.alpha(ink, 0.65)
@@ -30,7 +33,10 @@ Panel {
         if (!list) return
         var previous = list.contentY
         list.model = filtered
-        Qt.callLater(function() { list.contentY = Math.max(0, Math.min(previous, list.contentHeight - list.height)) })
+        Qt.callLater(function() {
+            if (!list) return
+            list.contentY = Math.max(0, Math.min(previous, list.contentHeight - list.height))
+        })
     }
     onFilteredChanged: syncRows()
     Component.onCompleted: syncRows()
@@ -52,6 +58,34 @@ Panel {
         }
         root.close()
         service.act("dispatch", project.key, scope, project.agents[0].pane_id, "")
+    }
+    function repoItems(repo) {
+        return (repo.pullRequests ? repo.pullRequests.totalCount : 0) + (repo.issues ? repo.issues.totalCount : 0)
+    }
+    function inScope(repo) {
+        return scope === "all" || (scope === "mine" ? repo.own : !repo.own)
+    }
+    // Ranking weight for the project list: open PRs plus open issues, busiest
+    // first. A project with nothing open scores 0 and drops off the list. One
+    // whose state is unknown (a GitHub error, or a folder with no repository
+    // mapped) scores -1: still listed, because it needs a human, but below
+    // every project with real work waiting.
+    function attention(project) {
+        if (project.error || !project.repos.length) return -1
+        var repos = project.repos.filter(root.inScope)
+        var total = 0
+        for (var i = 0; i < repos.length; i++) {
+            if (repos[i].error || !repos[i].checked) return -1
+            total += root.repoItems(repos[i])
+        }
+        return total
+    }
+    // Repos shown inside a project, most work first; clean repos are hidden.
+    function repoRows(project) {
+        if (!project) return []
+        return project.repos.filter(function(r) { return r.error || !r.checked || root.repoItems(r) > 0 }).sort(function(a, b) {
+            return root.repoItems(b) - root.repoItems(a)
+        })
     }
     function counts(project) {
         var repos = project.repos.filter(function(r) { return scope === "all" || (scope === "mine" ? r.own : !r.own) })
@@ -114,7 +148,7 @@ Panel {
                     Text { text: "PR HUNTER"; color: root.ink; font.family: Style.font.family; font.pixelSize: 21; font.bold: true; font.letterSpacing: 1; width: parent.width - refreshButton.width }
                     Button { id: refreshButton; text: root.service && root.service.refreshing ? "Checking…" : "Refresh"; enabled: root.service && !root.service.refreshing && !root.service.busy; onClicked: root.service.refresh(true) }
                 }
-                Text { width: parent.width; text: root.current ? root.current.label + "  /  " + root.current.session : root.projects.length + " projects · click to open Herdr or your default terminal"; wrapMode: Text.Wrap; color: root.muted; font.pixelSize: 12; textFormat: Text.PlainText }
+                Text { width: parent.width; text: root.current ? root.current.label + "  /  " + root.current.session : root.filtered.length + " projects need attention · click to open Herdr or your default terminal"; wrapMode: Text.Wrap; color: root.muted; font.pixelSize: 12; textFormat: Text.PlainText }
                 Row {
                     spacing: 5
                     Button { text: "All remotes"; selected: root.scope === "all"; onClicked: root.scope = "all" }
@@ -176,7 +210,7 @@ Panel {
                     }
                     Button { id: details; anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter } text: "Details"; onClicked: root.detail(row.modelData) }
                 }
-                Text { visible: list.count === 0; anchors.centerIn: parent; text: root.projects.length ? "No matching projects" : "Add a project folder above, or open a project in Herdr."; color: root.muted; font.pixelSize: 14 }
+                Text { visible: list.count === 0; anchors.centerIn: parent; text: root.projects.length ? (root.search.length ? "No matching projects with open work" : "Nothing needs attention — no open PRs or issues") : "Add a project folder above, or open a project in Herdr."; color: root.muted; font.pixelSize: 14 }
             }
             Flickable {
                 id: detailScroll
@@ -193,7 +227,7 @@ Panel {
                     spacing: 12
                     Text { width: parent.width; text: root.current ? root.counts(root.current) : ""; color: root.highlight; font.pixelSize: 19; font.bold: true }
                     Repeater {
-                        model: root.current ? root.current.repos : []
+                        model: root.repoRows(root.current)
                         delegate: Column {
                             required property var modelData
                             width: detailColumn.width

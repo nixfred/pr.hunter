@@ -381,6 +381,30 @@ class BackendTests(unittest.TestCase):
         self.assertEqual([p['label'] for p in projects], ['good'])
         self.assertEqual(len(errors), 1)
 
+    def test_scan_ranks_busiest_project_and_repo_first(self):
+        def project(key, label, repos):
+            return {'key': key, 'label': label, 'session': 's', 'repos': repos,
+                    'agents': [], 'paths': ['/p'], 'open': True}
+
+        def repo(name, prs, issues):
+            return {'name': name, 'roots': ['/p'], 'remotes': []}
+
+        projects = [project('quiet', 'quiet', [repo('me/quiet', 0, 0)]),
+                    project('busy', 'busy', [repo('me/small', 0, 0), repo('me/large', 0, 0)])]
+        cache = {'login': 'me', 'repos': {
+            'me/quiet': {'pullRequests': {'totalCount': 0}, 'issues': {'totalCount': 0}, 'checked': 1},
+            'me/small': {'pullRequests': {'totalCount': 1}, 'issues': {'totalCount': 0}, 'checked': 1},
+            'me/large': {'pullRequests': {'totalCount': 2}, 'issues': {'totalCount': 5}, 'checked': 1}}}
+        with patch.object(h, 'discover', return_value=(projects, [])), \
+             patch.object(h, 'process_queue', return_value={'jobs': {}}), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()
+        self.assertEqual([p['label'] for p in result['projects']], ['busy', 'quiet'])
+        busy = result['projects'][0]
+        self.assertEqual([r['name'] for r in busy['repos']], ['me/large', 'me/small'])
+        self.assertEqual(busy['pr_count'] + busy['issue_count'], 8)
+        self.assertEqual(result['projects'][1]['pr_count'] + result['projects'][1]['issue_count'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

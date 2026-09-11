@@ -767,7 +767,11 @@ def scan(force=False):
         if p["job"].get("status") == "sending":
             p["job"]["message"] = "Delivery pending/uncertain; inspect the session before retrying."
         p["agent_status"] = p["agents"][0].get("agent_status", "unknown") if len(p["agents"]) == 1 else ("choose agent" if p["agents"] else ("no local agent" if p.get("open", True) else "saved project · click to open"))
-    projects.sort(key=lambda p: (not bool(p["pr_count"] + p["issue_count"]), p["label"].casefold(), p["session"]))
+        p["repos"].sort(key=lambda r: (-((r.get("pullRequests") or {}).get("totalCount", 0)
+                                         + (r.get("issues") or {}).get("totalCount", 0)),
+                                       not (r.get("error") or not r.get("checked")),
+                                       r["name"].casefold()))
+    projects.sort(key=lambda p: (-(p["pr_count"] + p["issue_count"]), p["label"].casefold(), p["session"]))
     result = {"projects": projects, "errors": errors, "login": cache.get("login", ""), "at": time.time()}
     write_json(STATE / "snapshot.json", result)
     return result

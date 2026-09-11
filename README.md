@@ -18,6 +18,12 @@ work brief. It supports Claude, Codex and other agents recognized by Herdr.
   Other rows still open the project; use Details to choose an agent or mapping.
 - If a terminal is already attached, it is focused. Otherwise the plugin opens
   your default terminal attached to that Herdr session.
+- The list is ranked by attention: the project with the most open PRs and issues
+  sits at the top and the rest sort down from there. A project with nothing open
+  is not listed at all, and inside a project the same rule hides clean repos.
+  Projects whose state is unknown — a GitHub error, or a folder with no
+  repository mapped — stay listed below the ranked ones, since they still need a
+  human. Typing in the search box searches every project, including quiet ones.
 - Closed projects stay listed and monitored. Clicking one reuses a matching
   workspace or creates one in its saved directory, starting Herdr if necessary.
   If Herdr is missing or cannot start, it opens the default terminal there.
