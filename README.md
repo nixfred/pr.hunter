@@ -18,9 +18,14 @@ work brief. It supports Claude, Codex and other agents recognized by Herdr.
   Other rows still open the project; use Details to choose an agent or mapping.
 - If a terminal is already attached, it is focused. Otherwise the plugin opens
   your default terminal attached to that Herdr session.
-- The list is ranked by attention: the project with the most open PRs and issues
-  sits at the top and the rest sort down from there. A project with nothing open
-  is not listed at all, and inside a project the same rule hides clean repos.
+- The list is ranked by work still waiting for a handoff: the project with the
+  most items not yet sent to an agent sits at the top and the rest sort down from
+  there. Items already delivered are in hand, so a project whose whole queue is
+  with its agent stays listed, says "all N already sent to the agent", and ranks
+  below anything with unsent work. A project with nothing open is not listed at
+  all, and inside a project the same rules order and hide its repositories.
+  Delivery is counted per item URL, so an item edited since it was sent still
+  reads as delivered; a click fetches it fresh and carries it anyway.
   Projects whose state is unknown — a GitHub error, or a folder with no
   repository mapped — stay listed below the ranked ones, since they still need a
   human. Typing in the search box searches every project, including quiet ones.

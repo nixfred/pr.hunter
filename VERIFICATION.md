@@ -1,5 +1,19 @@
 # Verification
 
+## Ranking counted the wrong number (2026-09-11)
+
+- Imprint sat at the top showing nine open items while a click reported nothing
+  to send. Both were true: all nine were delivered to its agent at 11:34, and the
+  list was ranking raw open counts. Ranking now uses items not yet handed off,
+  measured against the delivery ledger, and a fully delivered project says so on
+  its row. Verified live: Imprint, infomarchy and blip moved below every project
+  with unsent work, including three holding a single item.
+- 64 Python tests pass, including a project with nine delivered items ranking
+  below one with two untouched items, and delivery being capped at what is still
+  open (items closed since delivery, and repository name case, must not distort
+  the count). The QML service check, the native Herdr transport check and the
+  isolated launch check pass. Screenshot inspected.
+
 ## Clicks that could not feed work (2026-09-11)
 
 - 62 Python tests and the QML service check pass, including new coverage for the

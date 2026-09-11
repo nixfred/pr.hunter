@@ -469,6 +469,39 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(h.suggest_checkout({'label': 'Now Playing', 'paths': [str(home)]}), '')
             self.assertEqual(h.suggest_checkout({'label': '../etc', 'paths': [str(home)]}), '')
 
+    def test_delivered_work_stops_holding_the_top_of_the_list(self):
+        def project(key, label, repo):
+            return {'key': key, 'label': label, 'session': 's', 'agents': [], 'paths': ['/p'],
+                    'open': True, 'repos': [{'name': repo, 'roots': ['/p'], 'remotes': []}]}
+
+        projects = [project('done', 'handed off', 'me/done'), project('fresh', 'untouched', 'me/fresh')]
+        cache = {'login': 'me', 'repos': {
+            'me/done': {'pullRequests': {'totalCount': 5}, 'issues': {'totalCount': 4}, 'checked': 1},
+            'me/fresh': {'pullRequests': {'totalCount': 2}, 'issues': {'totalCount': 0}, 'checked': 1}}}
+        ledger = {'jobs': {}, 'sent': {f'https://github.com/me/done/issues/{n}@t': {} for n in range(9)}}
+        with patch.object(h, 'discover', return_value=(projects, [])), \
+             patch.object(h, 'process_queue', return_value=ledger), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()
+        # Nine open items, all already with an agent, so two untouched ones outrank them.
+        self.assertEqual([p['label'] for p in result['projects']], ['untouched', 'handed off'])
+        handed = result['projects'][1]
+        self.assertEqual((handed['pr_count'] + handed['issue_count'], handed['delivered_count'], handed['pending_count']), (9, 9, 0))
+        self.assertEqual(result['projects'][0]['pending_count'], 2)
+
+    def test_delivery_never_counts_more_than_is_open(self):
+        projects = [{'key': 'k', 'label': 'shrunk', 'session': 's', 'agents': [], 'paths': ['/p'],
+                     'open': True, 'repos': [{'name': 'Me/Repo', 'roots': ['/p'], 'remotes': []}]}]
+        cache = {'login': 'me', 'repos': {'Me/Repo': {'pullRequests': {'totalCount': 1}, 'issues': {'totalCount': 0}, 'checked': 1}}}
+        # Six were delivered; five have since been closed, and case must not matter.
+        ledger = {'jobs': {}, 'sent': {f'https://github.com/me/repo/pull/{n}@t': {} for n in range(6)}}
+        with patch.object(h, 'discover', return_value=(projects, [])), \
+             patch.object(h, 'process_queue', return_value=ledger), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()
+        self.assertEqual(result['projects'][0]['delivered_count'], 1)
+        self.assertEqual(result['projects'][0]['pending_count'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
