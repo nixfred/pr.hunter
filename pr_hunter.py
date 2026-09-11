@@ -299,6 +299,27 @@ def add_project(path):
     return {"message": "Project added. Click it to open Herdr or your default terminal.", "key": key}
 
 
+def suggest_checkout(project):
+    """A likely checkout for a session whose panes sit outside any repository.
+    Only exact candidates are stat-ed; nothing is mapped without confirmation."""
+    label = (project.get("label") or "").strip()
+    if not label or "/" in label or label.startswith("."):
+        return ""
+    roots = [Path(p) for p in project.get("paths", [])] + [Path.home() / "Projects", Path.home()]
+    seen = set()
+    for root in roots:
+        candidate = root / label
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        try:
+            if candidate.is_dir() and git_repos(str(candidate)):
+                return str(candidate)
+        except (OSError, ValueError):
+            continue
+    return ""
+
+
 def refresh_repos(names, force=False, check_account=False):
     with locked("github.lock"):
         cache = read_json(STATE / "github.json", {"repos": {}})
@@ -395,6 +416,22 @@ def select_repos(project, scope, login):
     if scope == "upstream":
         repos = [r for r in repos if r["name"].split("/")[0].lower() != login.lower()]
     return repos
+
+
+def elsewhere(project, scope, cache):
+    """Where the open work is, when the clicked scope carried none of it."""
+    login = (cache.get("login") or "").lower()
+    totals = {"mine": 0, "upstream": 0}
+    for r in project["repos"]:
+        data = (cache.get("repos") or {}).get(r["name"], {})
+        count = (data.get("pullRequests") or {}).get("totalCount", 0) + (data.get("issues") or {}).get("totalCount", 0)
+        totals["mine" if r["name"].split("/")[0].lower() == login else "upstream"] += count
+    other = {"mine": "upstream", "upstream": "mine"}.get(scope)
+    if not other or not totals[other]:
+        return ""
+    return (f" {totals[other]} open items are waiting in this project's "
+            f"{'upstream' if other == 'upstream' else 'own'} repositories. "
+            f"Switch the scope to {'All remotes or Upstream' if other == 'upstream' else 'All remotes or Your repos'} and click again.")
 
 
 def brief_text(project, repos, items):
@@ -763,6 +800,8 @@ def scan(force=False):
             p["issue_count"] += issues
             if not r["own"]:
                 p["upstream_count"] += prs + issues
+        # A project a click cannot feed should say what would fix it.
+        p["suggested_path"] = suggest_checkout(p) if not p["repos"] else ""
         p["job"] = ledger["jobs"].get(p["key"], {})
         if p["job"].get("status") == "sending":
             p["job"]["message"] = "Delivery pending/uncertain; inspect the session before retrying."
@@ -777,7 +816,7 @@ def scan(force=False):
     return result
 
 
-def action(key, command, scope="all", pane=None, path=None):
+def action(key, command, scope="all", pane=None, path=None, force=False):
     if command == "add":
         return add_project(path)
     project = find_project(key)
@@ -787,7 +826,16 @@ def action(key, command, scope="all", pane=None, path=None):
         return {"message": open_saved_project(project) + " Start or select an agent to send work."}
     if command == "focus":
         agent = next((a for a in project["agents"] if a["pane_id"] == pane), None) if pane else None
-        return {"message": focus_project(project, agent) or "Opened " + project["label"]}
+        message = focus_project(project, agent) or "Opened " + project["label"] + "."
+        # A click that only focuses has to say why it carried no work, because the
+        # panel closes before this message can be read in it.
+        if not project["repos"]:
+            message += " No GitHub repository is mapped, so there is nothing to send. Map a checkout in Details."
+        elif not project["agents"]:
+            message += " No local agent is running yet. Start one in the session, then click the project again to send its work."
+        elif len(project["agents"]) > 1 and not agent:
+            message += " Several agents are running here. Choose one in Details to send work."
+        return {"message": message}
     if command == "map":
         if not path or not path.strip():
             raise Failure("A repository checkout path is required (--path).")
@@ -843,9 +891,22 @@ def action(key, command, scope="all", pane=None, path=None):
         if not any(agent_identity(a) == agent_identity(agent) for a in current["agents"]):
             raise Failure("Agent changed while preparing work. Click again to choose its current session.")
         project = current
+        fetched = len(items)
+        # "Send again" releases only this project's own receipts, so a brief the
+        # agent never acted on can be re-delivered without unlocking anything else.
+        if force:
+            for i in items:
+                ledger["sent"].pop(version(i), None)
         items = [i for i in items if version(i) not in ledger["sent"]]
         if not items:
-            return {"message": (warning or "Opened session. No new or updated items to send.") + notice}
+            if not fetched:
+                reason = "Opened the session. This scope has no open PRs or issues." + elsewhere(project, scope, cache)
+            else:
+                when = existing.get("sent_at")
+                stamp = time.strftime(" at %H:%M on %d %b", time.localtime(when)) if when else ""
+                reason = (f"Opened the session. Nothing new to send: all {fetched} open items were already "
+                          f"sent{stamp}. Use Send again in Details to resend them.")
+            return {"message": (warning + " " + reason if warning else reason) + notice}
         job_id = uuid.uuid4().hex
         brief = STATE / "briefs" / (job_id + ".md")
         write_private(brief, brief_text(project, repos, items) + unavailable_text(fetch_errors))
@@ -862,6 +923,28 @@ def action(key, command, scope="all", pane=None, path=None):
         return {"message": job["message"] + (" " + warning if warning else ""), "status": job["status"]}
 
 
+def log_action(args, started, result=None, error=None):
+    """Every click leaves a trace. The panel closes before an outcome can be read
+    in it, so this file is the only record of what a click actually did."""
+    if args.command == "scan" and not error:
+        return
+    entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "seconds": round(time.time() - started, 2),
+             "command": args.command, "key": args.key, "scope": args.scope, "pane": args.pane,
+             "force": args.force, "error": error,
+             "message": (result or {}).get("message"), "status": (result or {}).get("status")}
+    try:
+        path = STATE / "actions.log"
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with path.open("a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        if path.stat().st_size > 256 * 1024:
+            keep = path.read_text(encoding="utf-8").splitlines()[-500:]
+            write_private(path, "\n".join(keep) + "\n")
+    except OSError:
+        pass  # Diagnostics must never break a handoff.
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["scan", "dispatch", "preview", "focus", "terminal", "add", "cancel", "acknowledge", "map"])
@@ -871,6 +954,7 @@ def main():
     parser.add_argument("--path")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
+    started = time.time()
     try:
         if args.command == "scan":
             with locked("scan.lock"):
@@ -878,11 +962,13 @@ def main():
         else:
             if not args.key and args.command != "add":
                 raise Failure("A project key is required")
-            result = action(args.key, args.command, args.scope, args.pane, args.path)
+            result = action(args.key, args.command, args.scope, args.pane, args.path, args.force)
         print(json.dumps(result, ensure_ascii=False))
     except (Failure, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as e:
+        log_action(args, started, error=str(e)[:800])
         print(json.dumps({"error": str(e)[:800]}))
         return 1
+    log_action(args, started, result=result)
     return 0
 
 

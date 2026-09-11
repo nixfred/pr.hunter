@@ -46,7 +46,16 @@ Panel {
         selectedPane = project.agents.length === 1 ? project.agents[0].pane_id : ""
         showBrief = false
         detailScroll.contentY = 0
-        mappingPath.text = project.paths.length ? project.paths[0] : ""
+        mappingPath.text = project.suggested_path || (project.paths.length ? project.paths[0] : "")
+    }
+    // What a click on this row will actually do. Exposed in status() so the
+    // behaviour can be inspected without clicking.
+    function clickAction(project) {
+        if (!project.repos.length) return "focus: no repository mapped"
+        if (!project.agents.length) return "focus: no agent running"
+        if (project.agents.length > 1) return "focus: several agents, choose one"
+        if (!project.open) return "open saved project"
+        return "dispatch"
     }
     function dispatch(project) {
         if (!service || service.busy) return
@@ -111,7 +120,9 @@ Panel {
                 waiting: root.service ? root.service.waitingProjects : 0, busy: root.service ? root.service.busy : false,
                 error: root.service ? root.service.lastError : "Service not loaded", message: root.service ? root.service.message : "",
                 selected: root.selectedKey, scrollY: list.contentY, maxScroll: Math.max(0, list.contentHeight-list.height), previewReady: root.service ? root.service.previewReady : false,
-                rows: root.filtered.map(function(p) { return {key:p.key,label:p.label,prs:p.pr_count,issues:p.issue_count,agent:p.agent_status} })})
+                rows: root.filtered.map(function(p) { return {key:p.key,label:p.label,prs:p.pr_count,issues:p.issue_count,agent:p.agent_status,
+                    agents:p.agents.length,repos:p.repos.length,open:p.open,job:p.job.status||"",
+                    click:root.clickAction(p)} })})
         }
         function refresh(): void { if (root.service) root.service.refresh(true) }
         function preview(key: string): void {
@@ -205,7 +216,7 @@ Panel {
                         anchors { left: parent.left; leftMargin: 12; right: details.left; rightMargin: 10; verticalCenter: parent.verticalCenter }
                         spacing: 5
                         Text { width: parent.width; text: row.modelData.label; color: root.ink; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; textFormat: Text.PlainText }
-                        Text { width: parent.width; text: row.modelData.error ? "GitHub unavailable · Details" : row.modelData.repos.length ? root.counts(row.modelData) + (row.modelData.upstream_count && root.scope === "all" ? " · includes upstream" : "") : "Repository needs mapping"; color: row.modelData.error ? Color.urgent : root.highlight; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
+                        Text { width: parent.width; text: row.modelData.error ? "GitHub unavailable · Details" : row.modelData.repos.length ? root.counts(row.modelData) + (row.modelData.upstream_count && root.scope === "all" ? " · includes upstream" : "") : (row.modelData.suggested_path ? "No repository mapped · Details suggests " + row.modelData.suggested_path : "No repository mapped · a click only opens the session"); color: row.modelData.error ? Color.urgent : root.highlight; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
                         Text { width: parent.width; text: !row.modelData.open ? "Saved project · click to open" : row.modelData.job.status === "queued" ? "Queued · waiting for agent" : (row.modelData.job.status === "sent" ? "Last handoff: " + row.modelData.job.message : row.modelData.job.message) || row.modelData.agent_status + " · " + row.modelData.session; color: root.muted; font.pixelSize: 12; elide: Text.ElideRight; textFormat: Text.PlainText }
                     }
                     Button { id: details; anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter } text: "Details"; onClicked: root.detail(row.modelData) }
@@ -257,6 +268,11 @@ Panel {
                         Button { text: "Open project"; enabled: root.current !== null && root.service && !root.service.busy; onClicked: { root.close(); root.service.act("focus", root.current.key, root.scope, root.selectedPane, "") } }
                         Button { text: "Acknowledge receipt"; visible: root.current !== null && ["sending", "uncertain"].indexOf(root.current.job.status) >= 0; enabled: root.service && !root.service.busy; onClicked: root.service.act("acknowledge", root.current.key, root.scope, "", "") }
                         Button { text: "Cancel queue"; visible: root.current !== null && root.current.job.status === "queued"; enabled: root.service && !root.service.busy; onClicked: root.service.act("cancel", root.current.key, root.scope, "", "") }
+                        // A click never resends work the agent already received. This does,
+                        // for a brief that was delivered but never acted on.
+                        Button { text: "Send again"; visible: root.current !== null && ["sent", "skipped"].indexOf(root.current.job.status) >= 0
+                                 enabled: root.current !== null && root.selectedPane.length > 0 && root.current.repos.length > 0 && root.service && !root.service.busy
+                                 onClicked: { root.close(); root.service.act("dispatch", root.current.key, root.scope, root.selectedPane, "", true) } }
                     }
                     Text { width: parent.width; text: root.current ? root.current.job.message || "A click sends new or updated items. Busy agents wait until ready." : ""; color: root.muted; wrapMode: Text.Wrap; font.pixelSize: 12; textFormat: Text.PlainText }
                     Text { width: parent.width; text: "Repository checkout"; color: root.ink; font.pixelSize: 13; font.bold: true }

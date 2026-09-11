@@ -45,13 +45,26 @@ Item {
         }
         start("scan", force ? ["--force"] : [])
     }
-    function act(command, key, scope, pane, path) {
+    // Commands that close the panel before their result arrives. Their outcome is
+    // only ever seen as a notification, so it must always be sent to one.
+    readonly property var announced: ["dispatch", "focus", "terminal"]
+    property bool notifications: true
+    property string lastAnnouncement: ""
+    function announce(command, text, failed) {
+        if (announced.indexOf(command) < 0 || !text) return
+        lastAnnouncement = text
+        if (!notifications) return
+        Quickshell.execDetached(["notify-send", "-a", "PR Hunter", "-u", failed ? "critical" : "normal",
+                                 failed ? "PR Hunter could not send the work" : "PR Hunter", text])
+    }
+    function act(command, key, scope, pane, path, force) {
         if (busy) return
         previewReady = false
         message = command === "preview" ? "Loading the complete work brief…" : command === "dispatch" ? "Preparing the handoff…" : "Working…"
         var args = ["--key=" + key, "--scope=" + (scope || "all")]
         if (pane) args.push("--pane=" + pane)
         if (path) args.push("--path=" + path)
+        if (force) args.push("--force")
         if (activeCommand !== "") pendingAction = {command: command, args: args}
         else start(command, args)
     }
@@ -65,6 +78,7 @@ Item {
             p.job = p.job || {}
             p.label = p.label || "Untitled project"
             p.session = p.session || ""
+            p.suggested_path = typeof p.suggested_path === "string" ? p.suggested_path : ""
             p.pr_count = Number(p.pr_count) || 0
             p.issue_count = Number(p.issue_count) || 0
             return p
@@ -85,12 +99,13 @@ Item {
             else {
                 message = result.message || "Done"
                 if (result.brief) { preview = result.brief; previewReady = true }
+                announce(command, message, false)
             }
         } catch(e) {
             var problem = String(e.message || e).slice(0, 800)
             if (!stdoutText.trim() && !timedOut && stderrText.trim()) problem = stderrText.trim().slice(0, 800)
             if (command === "scan") lastError = problem
-            else message = problem
+            else { message = problem; announce(command, problem, true) }
         }
         activeCommand = ""
         if (pendingAction !== null) {
