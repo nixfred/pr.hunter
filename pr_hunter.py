@@ -299,6 +299,13 @@ def add_project(path):
     return {"message": "Project added. Click it to open Herdr or your default terminal.", "key": key}
 
 
+def delivered_urls(ledger):
+    """Item URLs already handed to an agent. Receipts are version-keyed, so an
+    item edited since delivery still counts here; the next click fetches it
+    fresh and sends it again, which is the safe direction to be wrong in."""
+    return {v.rsplit("@", 1)[0].casefold() for v in ledger.get("sent", {})}
+
+
 def suggest_checkout(project):
     """A likely checkout for a session whose panes sit outside any repository.
     Only exact candidates are stat-ed; nothing is mapped without confirmation."""
@@ -785,8 +792,10 @@ def scan(force=False):
     except (Failure, OSError, subprocess.TimeoutExpired) as e:
         cache = read_json(STATE / "github.json", {"repos": {}})
         errors.append("GitHub: " + str(e))
+    sent = delivered_urls(ledger)
     for p in projects:
         p["pr_count"], p["issue_count"], p["upstream_count"] = 0, 0, 0
+        p["delivered_count"], p["pending_count"] = 0, 0
         p["error"] = p.get("directory_error", "")
         for r in p["repos"]:
             data = cache["repos"].get(r["name"], {})
@@ -798,6 +807,14 @@ def scan(force=False):
             issues = data.get("issues", {}).get("totalCount", 0)
             p["pr_count"] += prs
             p["issue_count"] += issues
+            # Open on GitHub and waiting for an agent are different numbers. An
+            # item already delivered is in hand, so it must not keep a project at
+            # the top of the list. Delivery can never exceed what is still open.
+            prefix = "https://github.com/" + r["name"].casefold() + "/"
+            r["delivered"] = min(prs + issues, sum(1 for u in sent if u.startswith(prefix)))
+            r["pending"] = prs + issues - r["delivered"]
+            p["delivered_count"] += r["delivered"]
+            p["pending_count"] += r["pending"]
             if not r["own"]:
                 p["upstream_count"] += prs + issues
         # A project a click cannot feed should say what would fix it.
@@ -806,11 +823,13 @@ def scan(force=False):
         if p["job"].get("status") == "sending":
             p["job"]["message"] = "Delivery pending/uncertain; inspect the session before retrying."
         p["agent_status"] = p["agents"][0].get("agent_status", "unknown") if len(p["agents"]) == 1 else ("choose agent" if p["agents"] else ("no local agent" if p.get("open", True) else "saved project · click to open"))
-        p["repos"].sort(key=lambda r: (-((r.get("pullRequests") or {}).get("totalCount", 0)
+        p["repos"].sort(key=lambda r: (-r.get("pending", 0),
+                                       -((r.get("pullRequests") or {}).get("totalCount", 0)
                                          + (r.get("issues") or {}).get("totalCount", 0)),
                                        not (r.get("error") or not r.get("checked")),
                                        r["name"].casefold()))
-    projects.sort(key=lambda p: (-(p["pr_count"] + p["issue_count"]), p["label"].casefold(), p["session"]))
+    projects.sort(key=lambda p: (-p["pending_count"], -(p["pr_count"] + p["issue_count"]),
+                                 p["label"].casefold(), p["session"]))
     result = {"projects": projects, "errors": errors, "login": cache.get("login", ""), "at": time.time()}
     write_json(STATE / "snapshot.json", result)
     return result

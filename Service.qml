@@ -81,6 +81,7 @@ Item {
             p.suggested_path = typeof p.suggested_path === "string" ? p.suggested_path : ""
             p.pr_count = Number(p.pr_count) || 0
             p.issue_count = Number(p.issue_count) || 0
+            p.pending_count = Number(p.pending_count) || 0
             return p
         })
         return result

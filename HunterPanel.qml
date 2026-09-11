@@ -21,8 +21,12 @@ Panel {
     readonly property var current: projects.find(function(p) { return p.key === root.selectedKey }) || null
     readonly property var filtered: projects.filter(function(p) {
         return (p.label + " " + p.repos.map(function(r) { return r.name }).join(" ")).toLowerCase().indexOf(root.search.toLowerCase()) >= 0
-    }).filter(function(p) { return root.search.length > 0 || root.attention(p) !== 0 }).sort(function(a, b) {
+    }).filter(function(p) {
+        return root.search.length > 0 || root.attention(p) === -1 || root.openItems(p) > 0
+    }).sort(function(a, b) {
         var d = root.attention(b) - root.attention(a)
+        if (d !== 0) return d
+        d = root.openItems(b) - root.openItems(a)
         return d !== 0 ? d : a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1
     })
     readonly property color ink: Color.popups.text
@@ -71,21 +75,32 @@ Panel {
     function repoItems(repo) {
         return (repo.pullRequests ? repo.pullRequests.totalCount : 0) + (repo.issues ? repo.issues.totalCount : 0)
     }
+    // Open on GitHub, minus what an agent already holds. This is the number a
+    // click can act on, and the only honest basis for "needs the most attention".
+    function repoPending(repo) {
+        return typeof repo.pending === "number" ? repo.pending : repoItems(repo)
+    }
+    function openItems(project) {
+        var repos = project.repos.filter(root.inScope)
+        var total = 0
+        for (var i = 0; i < repos.length; i++) total += root.repoItems(repos[i])
+        return total
+    }
     function inScope(repo) {
         return scope === "all" || (scope === "mine" ? repo.own : !repo.own)
     }
-    // Ranking weight for the project list: open PRs plus open issues, busiest
-    // first. A project with nothing open scores 0 and drops off the list. One
-    // whose state is unknown (a GitHub error, or a folder with no repository
-    // mapped) scores -1: still listed, because it needs a human, but below
-    // every project with real work waiting.
+    // Ranking weight for the project list: items still waiting for a handoff,
+    // most first. Work already delivered to an agent is in hand and must not
+    // hold the top of the list. A project whose state is unknown (a GitHub
+    // error, or a folder with no repository mapped) scores -1: still listed,
+    // because it needs a human, but below every project with waiting work.
     function attention(project) {
         if (project.error || !project.repos.length) return -1
         var repos = project.repos.filter(root.inScope)
         var total = 0
         for (var i = 0; i < repos.length; i++) {
             if (repos[i].error || !repos[i].checked) return -1
-            total += root.repoItems(repos[i])
+            total += root.repoPending(repos[i])
         }
         return total
     }
@@ -93,17 +108,31 @@ Panel {
     function repoRows(project) {
         if (!project) return []
         return project.repos.filter(function(r) { return r.error || !r.checked || root.repoItems(r) > 0 }).sort(function(a, b) {
-            return root.repoItems(b) - root.repoItems(a)
+            var d = root.repoPending(b) - root.repoPending(a)
+            return d !== 0 ? d : root.repoItems(b) - root.repoItems(a)
         })
     }
     function counts(project) {
-        var repos = project.repos.filter(function(r) { return scope === "all" || (scope === "mine" ? r.own : !r.own) })
+        var repos = project.repos.filter(root.inScope)
         var prs = 0, issues = 0
         for (var i = 0; i < repos.length; i++) {
             prs += repos[i].pullRequests ? repos[i].pullRequests.totalCount : 0
             issues += repos[i].issues ? repos[i].issues.totalCount : 0
         }
         return prs + " open PR" + (prs === 1 ? "" : "s") + "  ·  " + issues + " open issue" + (issues === 1 ? "" : "s")
+    }
+    // What a click would actually hand over, stated where the click happens.
+    function waiting(project) {
+        var pending = root.attention(project)
+        var open = root.openItems(project)
+        if (pending === -1 || !open) return ""
+        // State the delivery record, never a prediction: an item edited since it
+        // was sent counts as delivered here, and a click will still carry it.
+        // Deliveries can span several handoffs, so name no single time here; the
+        // handoff line below the counts carries the most recent one.
+        if (pending === 0) return "  ·  all " + open + " already sent to the agent"
+        if (pending < open) return "  ·  " + pending + " not yet sent"
+        return ""
     }
     onOpenedChanged: if (opened && service) service.refresh(false)
     IpcHandler {
@@ -216,7 +245,7 @@ Panel {
                         anchors { left: parent.left; leftMargin: 12; right: details.left; rightMargin: 10; verticalCenter: parent.verticalCenter }
                         spacing: 5
                         Text { width: parent.width; text: row.modelData.label; color: root.ink; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; textFormat: Text.PlainText }
-                        Text { width: parent.width; text: row.modelData.error ? "GitHub unavailable · Details" : row.modelData.repos.length ? root.counts(row.modelData) + (row.modelData.upstream_count && root.scope === "all" ? " · includes upstream" : "") : (row.modelData.suggested_path ? "No repository mapped · Details suggests " + row.modelData.suggested_path : "No repository mapped · a click only opens the session"); color: row.modelData.error ? Color.urgent : root.highlight; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
+                        Text { width: parent.width; text: row.modelData.error ? "GitHub unavailable · Details" : row.modelData.repos.length ? root.counts(row.modelData) + root.waiting(row.modelData) + (row.modelData.upstream_count && root.scope === "all" ? " · includes upstream" : "") : (row.modelData.suggested_path ? "No repository mapped · Details suggests " + row.modelData.suggested_path : "No repository mapped · a click only opens the session"); color: row.modelData.error ? Color.urgent : root.highlight; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
                         Text { width: parent.width; text: !row.modelData.open ? "Saved project · click to open" : row.modelData.job.status === "queued" ? "Queued · waiting for agent" : (row.modelData.job.status === "sent" ? "Last handoff: " + row.modelData.job.message : row.modelData.job.message) || row.modelData.agent_status + " · " + row.modelData.session; color: root.muted; font.pixelSize: 12; elide: Text.ElideRight; textFormat: Text.PlainText }
                     }
                     Button { id: details; anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter } text: "Details"; onClicked: root.detail(row.modelData) }
@@ -237,6 +266,7 @@ Panel {
                     width: detailScroll.width - 14
                     spacing: 12
                     Text { width: parent.width; text: root.current ? root.counts(root.current) : ""; color: root.highlight; font.pixelSize: 19; font.bold: true }
+                    Text { width: parent.width; visible: text.length > 0; text: root.current ? root.waiting(root.current).replace(/^\s+·\s+/, "") : ""; color: root.muted; font.pixelSize: 13; wrapMode: Text.Wrap; textFormat: Text.PlainText }
                     Repeater {
                         model: root.repoRows(root.current)
                         delegate: Column {
@@ -244,7 +274,7 @@ Panel {
                             width: detailColumn.width
                             spacing: 4
                             Text { width: parent.width; text: modelData.name + (modelData.own ? "  ·  yours" : "  ·  upstream"); color: root.ink; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
-                            Text { width: parent.width; text: modelData.error || ((modelData.pullRequests ? modelData.pullRequests.totalCount : "?") + " PRs · " + (modelData.hasIssuesEnabled === false ? "issues disabled" : (modelData.issues ? modelData.issues.totalCount : "?") + " issues") + (modelData.checked ? " · checked " + new Date(modelData.checked * 1000).toLocaleTimeString() : "")); color: modelData.error ? Color.urgent : root.muted; font.pixelSize: 11; wrapMode: Text.Wrap; textFormat: Text.PlainText }
+                            Text { width: parent.width; text: modelData.error || ((modelData.pullRequests ? modelData.pullRequests.totalCount : "?") + " PRs · " + (modelData.hasIssuesEnabled === false ? "issues disabled" : (modelData.issues ? modelData.issues.totalCount : "?") + " issues") + (root.repoPending(modelData) < root.repoItems(modelData) ? " · " + root.repoPending(modelData) + " not yet sent" : "") + (modelData.checked ? " · checked " + new Date(modelData.checked * 1000).toLocaleTimeString() : "")); color: modelData.error ? Color.urgent : root.muted; font.pixelSize: 11; wrapMode: Text.Wrap; textFormat: Text.PlainText }
                         }
                     }
                     Text { width: parent.width; text: root.current && root.current.paths.length ? "Project directory: " + root.current.paths[0] : "No directory saved — set a checkout below."; color: root.muted; font.pixelSize: 12; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
