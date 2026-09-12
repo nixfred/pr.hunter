@@ -168,7 +168,7 @@ Panel {
         tooltipText: "PR Hunter · " + root.projects.length + " projects\nClick to open PRs, issues and session handoffs"
         onPressed: root.toggle()
     }
-    PopupCard {
+    KeyboardPanel {
         id: popup
         bar: root.bar
         anchorItem: root
