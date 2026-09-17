@@ -502,6 +502,103 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(result['projects'][0]['delivered_count'], 1)
         self.assertEqual(result['projects'][0]['pending_count'], 0)
 
+    def test_read_sample_finds_people_with_no_standing_only(self):
+        result = {'issues': {'totalCount': 4, 'nodes': [
+                      {'number': 1, 'authorAssociation': 'NONE', 'author': {'login': 'astranger', '__typename': 'User'}},
+                      {'number': 2, 'authorAssociation': 'OWNER', 'author': {'login': 'nixfred', '__typename': 'User'}},
+                      {'number': 3, 'authorAssociation': 'NONE', 'author': {'login': 'dependabot', '__typename': 'Bot'}},
+                      {'number': 4, 'authorAssociation': 'NONE', 'author': None}]},
+                  'pullRequests': {'totalCount': 2, 'nodes': [
+                      {'number': 9, 'authorAssociation': 'FIRST_TIME_CONTRIBUTOR', 'author': {'login': 'newcomer', '__typename': 'User'}},
+                      {'number': 8, 'authorAssociation': 'COLLABORATOR', 'author': {'login': 'mate', '__typename': 'User'}}]}}
+        found, sample = h.read_sample(result)
+        self.assertEqual([(x['login'], x['kind'], x['number']) for x in found],
+                         [('astranger', 'Issue', 1), ('newcomer', 'PR', 9)])
+        # Every open item is remembered by identity, not just the strangers.
+        self.assertEqual((sample['issues'], sample['prs'], sample['complete']), ([1, 2, 3, 4], [9, 8], True))
+        # Totals persist in the cache; the sampled payload does not.
+        self.assertNotIn('nodes', result['issues'])
+        self.assertEqual(result['issues']['totalCount'], 4)
+        self.assertEqual(h.item_url('me/repo', found[0]), 'https://github.com/me/repo/issues/1')
+        self.assertEqual(h.item_url('Me/Repo', found[1]), 'https://github.com/me/repo/pull/9')
+
+    def test_one_stranger_at_your_own_door_outranks_a_pile_of_work(self):
+        def project(key, label, repo):
+            return {'key': key, 'label': label, 'session': 's', 'agents': [], 'paths': ['/p'],
+                    'open': True, 'repos': [{'name': repo, 'roots': ['/p'], 'remotes': []}]}
+
+        projects = [project('busy', 'busy', 'me/busy'), project('knock', 'knock', 'me/knock')]
+        cache = {'login': 'me', 'repos': {
+            'me/busy': {'pullRequests': {'totalCount': 40}, 'issues': {'totalCount': 40}, 'checked': 1, 'strangers': []},
+            'me/knock': {'pullRequests': {'totalCount': 0}, 'issues': {'totalCount': 1}, 'checked': 1,
+                         'strangers': [{'login': 'kanthi', 'number': 1, 'kind': 'Issue'}]}}}
+        with patch.object(h, 'discover', return_value=(projects, [])), \
+             patch.object(h, 'process_queue', return_value={'jobs': {}, 'sent': {}}), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()
+        self.assertEqual([p['label'] for p in result['projects']], ['knock', 'busy'])
+        self.assertEqual(result['projects'][0]['stranger_count'], 1)
+        self.assertEqual(result['projects'][1]['stranger_count'], 0)
+
+    def test_strangers_count_only_on_repositories_you_own(self):
+        projects = [{'key': 'k', 'label': 'upstream work', 'session': 's', 'agents': [], 'paths': ['/p'],
+                     'open': True, 'repos': [{'name': 'someoneelse/repo', 'roots': ['/p'], 'remotes': []}]}]
+        cache = {'login': 'me', 'repos': {'someoneelse/repo': {
+            'pullRequests': {'totalCount': 0}, 'issues': {'totalCount': 30}, 'checked': 1,
+            'strangers': [{'login': f'person{n}', 'number': n, 'kind': 'Issue'} for n in range(30)]}}}
+        with patch.object(h, 'discover', return_value=(projects, [])), \
+             patch.object(h, 'process_queue', return_value={'jobs': {}, 'sent': {}}), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()
+        # On a repository you do not own, a stranger is the normal population.
+        self.assertEqual(result['projects'][0]['stranger_count'], 0)
+        self.assertEqual(result['projects'][0]['repos'][0]['strangers'], [])
+
+    def test_a_stranger_already_handed_to_an_agent_stops_counting(self):
+        projects = [{'key': 'k', 'label': 'mine', 'session': 's', 'agents': [], 'paths': ['/p'],
+                     'open': True, 'repos': [{'name': 'me/repo', 'roots': ['/p'], 'remotes': []}]}]
+        cache = {'login': 'me', 'repos': {'me/repo': {
+            'pullRequests': {'totalCount': 0}, 'issues': {'totalCount': 2}, 'checked': 1,
+            'strangers': [{'login': 'first', 'number': 1, 'kind': 'Issue'},
+                          {'login': 'second', 'number': 2, 'kind': 'Issue'}]}}}
+        ledger = {'jobs': {}, 'sent': {'https://github.com/me/repo/issues/1@t': {}}}
+        with patch.object(h, 'discover', return_value=(projects, [])), \
+             patch.object(h, 'process_queue', return_value=ledger), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()
+        self.assertEqual(result['projects'][0]['stranger_count'], 1)
+        self.assertEqual([x['login'] for x in result['projects'][0]['repos'][0]['strangers']], ['second'])
+
+    def test_delivery_is_counted_against_items_that_are_open_now(self):
+        """A receipt for an item closed since must not hide work that is waiting."""
+        projects = [{'key': 'k', 'label': 'mine', 'session': 's', 'agents': [], 'paths': ['/p'],
+                     'open': True, 'repos': [{'name': 'me/repo', 'roots': ['/p'], 'remotes': []}]}]
+        cache = {'login': 'me', 'repos': {'me/repo': {
+            'pullRequests': {'totalCount': 2}, 'issues': {'totalCount': 0}, 'checked': 1, 'strangers': [],
+            'sample': {'issues': [], 'prs': [96, 100], 'complete': True}}}}
+        # Twelve receipts for this repo, none of them for the two open PRs.
+        ledger = {'jobs': {}, 'sent': {f'https://github.com/me/repo/pull/{n}@t': {} for n in range(50, 62)}}
+        with patch.object(h, 'discover', return_value=(projects, [])), \
+             patch.object(h, 'process_queue', return_value=ledger), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()
+        self.assertEqual(result['projects'][0]['delivered_count'], 0)
+        self.assertEqual(result['projects'][0]['pending_count'], 2)
+
+    def test_a_repository_busier_than_the_sample_falls_back_to_the_estimate(self):
+        projects = [{'key': 'k', 'label': 'huge', 'session': 's', 'agents': [], 'paths': ['/p'],
+                     'open': True, 'repos': [{'name': 'me/huge', 'roots': ['/p'], 'remotes': []}]}]
+        cache = {'login': 'me', 'repos': {'me/huge': {
+            'pullRequests': {'totalCount': 0}, 'issues': {'totalCount': 80}, 'checked': 1, 'strangers': [],
+            'sample': {'issues': list(range(50)), 'prs': [], 'complete': False}}}}
+        ledger = {'jobs': {}, 'sent': {f'https://github.com/me/huge/issues/{n}@t': {} for n in range(10)}}
+        with patch.object(h, 'discover', return_value=(projects, [])), \
+             patch.object(h, 'process_queue', return_value=ledger), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()
+        self.assertEqual(result['projects'][0]['delivered_count'], 10)
+        self.assertEqual(result['projects'][0]['pending_count'], 70)
+
 
 if __name__ == '__main__':
     unittest.main()

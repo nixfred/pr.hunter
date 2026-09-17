@@ -24,7 +24,9 @@ Panel {
     }).filter(function(p) {
         return root.search.length > 0 || root.attention(p) === -1 || root.openItems(p) > 0
     }).sort(function(a, b) {
-        var d = root.attention(b) - root.attention(a)
+        var d = root.strangerCount(b) - root.strangerCount(a)
+        if (d !== 0) return d
+        d = root.attention(b) - root.attention(a)
         if (d !== 0) return d
         d = root.openItems(b) - root.openItems(a)
         return d !== 0 ? d : a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1
@@ -80,6 +82,24 @@ Panel {
     function repoPending(repo) {
         return typeof repo.pending === "number" ? repo.pending : repoItems(repo)
     }
+    // People with no standing in a repository Fred owns. The backend counts them
+    // only there, and only while they are still waiting for a handoff.
+    function repoStrangers(repo) {
+        return (repo.strangers || []).length
+    }
+    function strangerCount(project) {
+        var repos = project.repos.filter(root.inScope)
+        var total = 0
+        for (var i = 0; i < repos.length; i++) total += root.repoStrangers(repos[i])
+        return total
+    }
+    function strangerNames(repo) {
+        var seen = []
+        var list = repo.strangers || []
+        for (var i = 0; i < list.length; i++)
+            if (seen.indexOf(list[i].login) < 0) seen.push(list[i].login)
+        return seen
+    }
     function openItems(project) {
         var repos = project.repos.filter(root.inScope)
         var total = 0
@@ -108,7 +128,9 @@ Panel {
     function repoRows(project) {
         if (!project) return []
         return project.repos.filter(function(r) { return r.error || !r.checked || root.repoItems(r) > 0 }).sort(function(a, b) {
-            var d = root.repoPending(b) - root.repoPending(a)
+            var d = root.repoStrangers(b) - root.repoStrangers(a)
+            if (d !== 0) return d
+            d = root.repoPending(b) - root.repoPending(a)
             return d !== 0 ? d : root.repoItems(b) - root.repoItems(a)
         })
     }
@@ -126,6 +148,8 @@ Panel {
         var pending = root.attention(project)
         var open = root.openItems(project)
         if (pending === -1 || !open) return ""
+        var strangers = root.strangerCount(project)
+        if (strangers) return "  ·  " + strangers + (strangers === 1 ? " from someone" : " from people") + " you have not met"
         // State the delivery record, never a prediction: an item edited since it
         // was sent counts as delivered here, and a click will still carry it.
         // Deliveries can span several handoffs, so name no single time here; the
@@ -274,7 +298,7 @@ Panel {
                             width: detailColumn.width
                             spacing: 4
                             Text { width: parent.width; text: modelData.name + (modelData.own ? "  ·  yours" : "  ·  upstream"); color: root.ink; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
-                            Text { width: parent.width; text: modelData.error || ((modelData.pullRequests ? modelData.pullRequests.totalCount : "?") + " PRs · " + (modelData.hasIssuesEnabled === false ? "issues disabled" : (modelData.issues ? modelData.issues.totalCount : "?") + " issues") + (root.repoPending(modelData) < root.repoItems(modelData) ? " · " + root.repoPending(modelData) + " not yet sent" : "") + (modelData.checked ? " · checked " + new Date(modelData.checked * 1000).toLocaleTimeString() : "")); color: modelData.error ? Color.urgent : root.muted; font.pixelSize: 11; wrapMode: Text.Wrap; textFormat: Text.PlainText }
+                            Text { width: parent.width; text: modelData.error || ((modelData.pullRequests ? modelData.pullRequests.totalCount : "?") + " PRs · " + (modelData.hasIssuesEnabled === false ? "issues disabled" : (modelData.issues ? modelData.issues.totalCount : "?") + " issues") + (root.repoStrangers(modelData) ? " · " + root.repoStrangers(modelData) + " from people you have not met: " + root.strangerNames(modelData).slice(0, 4).join(", ") + (root.strangerNames(modelData).length > 4 ? " and " + (root.strangerNames(modelData).length - 4) + " more" : "") : "") + (root.repoPending(modelData) < root.repoItems(modelData) ? " · " + root.repoPending(modelData) + " not yet sent" : "") + (modelData.checked ? " · checked " + new Date(modelData.checked * 1000).toLocaleTimeString() : "")); color: modelData.error ? Color.urgent : root.muted; font.pixelSize: 11; wrapMode: Text.Wrap; textFormat: Text.PlainText }
                         }
                     }
                     Text { width: parent.width; text: root.current && root.current.paths.length ? "Project directory: " + root.current.paths[0] : "No directory saved — set a checkout below."; color: root.muted; font.pixelSize: 12; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }

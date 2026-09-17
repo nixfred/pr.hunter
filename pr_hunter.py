@@ -327,6 +327,56 @@ def suggest_checkout(project):
     return ""
 
 
+# Open items are sampled newest-first for authorship. Fred's own repositories
+# hold far fewer open items than this, so the sample is the whole population
+# there; only a very busy upstream repository can exceed it.
+AUTHOR_SAMPLE = 100
+# GitHub's association for someone with no standing in the repository: not the
+# owner, not an org member, not a collaborator, not a returning contributor.
+UNKNOWN_AUTHOR = ("NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN")
+
+
+def read_sample(result):
+    """Reduce the sampled open items to what is worth caching: which items are
+    open, and which of them were opened by a person with no standing in the
+    repository. On a repository you own that person is a stranger arriving at
+    your door, which is the one signal worth reading before anything else. Bots
+    and deleted accounts are excluded: only a real person counts.
+
+    "complete" says the sample is the whole population, so membership questions
+    about it can be answered exactly rather than estimated."""
+    strangers, sample = [], {"issues": [], "prs": [], "complete": True}
+    for key, kind, bucket in (("issues", "Issue", "issues"), ("pullRequests", "PR", "prs")):
+        section = result.get(key) or {}
+        nodes = section.pop("nodes", None) or []
+        if section.get("totalCount", 0) > AUTHOR_SAMPLE:
+            sample["complete"] = False
+        for node in nodes:
+            number = node.get("number")
+            if not isinstance(number, int):
+                continue
+            sample[bucket].append(number)
+            author = node.get("author") or {}
+            if author.get("__typename") != "User" or not author.get("login"):
+                continue
+            if node.get("authorAssociation") not in UNKNOWN_AUTHOR:
+                continue
+            strangers.append({"login": author["login"], "number": number, "kind": kind})
+    return strangers, sample
+
+
+def sample_urls(name, sample):
+    return ([item_url(name, {"kind": "Issue", "number": n}) for n in sample.get("issues") or []]
+            + [item_url(name, {"kind": "PR", "number": n}) for n in sample.get("prs") or []])
+
+
+def item_url(repo, item):
+    """The html_url GitHub gives the same item over REST, which is what a
+    delivery receipt is keyed on."""
+    return "https://github.com/{}/{}/{}".format(
+        repo, "pull" if item.get("kind") == "PR" else "issues", item.get("number")).casefold()
+
+
 def refresh_repos(names, force=False, check_account=False):
     with locked("github.lock"):
         cache = read_json(STATE / "github.json", {"repos": {}})
@@ -348,9 +398,15 @@ def refresh_repos(names, force=False, check_account=False):
             fields = []
             for i, name in enumerate(batch):
                 owner, repo = name.split("/")
+                # The author fields ride along in the existing batched query: no
+                # extra request, and they carry the strongest signal we have.
+                authors = ('{totalCount nodes{number authorAssociation author{login __typename}}}')
                 fields.append(f'r{i}:repository(owner:{json.dumps(owner)},name:{json.dumps(repo)})'
                               '{nameWithOwner url hasIssuesEnabled viewerPermission '
-                              'pullRequests(states:OPEN){totalCount} issues(states:OPEN){totalCount}}')
+                              'pullRequests(states:OPEN,first:' + str(AUTHOR_SAMPLE) +
+                              ',orderBy:{field:UPDATED_AT,direction:DESC})' + authors +
+                              ' issues(states:OPEN,first:' + str(AUTHOR_SAMPLE) +
+                              ',orderBy:{field:UPDATED_AT,direction:DESC})' + authors + '}')
             try:
                 # gh sends this GraphQL read using POST; no mutation is present.
                 p = subprocess.run(["gh", "api", "graphql", "--input", "-"],
@@ -361,6 +417,7 @@ def refresh_repos(names, force=False, check_account=False):
                     result = data.get("data", {}).get(f"r{i}") if data.get("data") else None
                     old = cache["repos"].get(name, {})
                     if result:
+                        result["strangers"], result["sample"] = read_sample(result)
                         cache["repos"][name] = {**result, "checked": now, "attempt": now}
                     else:
                         error = next((x.get("message") for x in data.get("errors", [])
@@ -795,7 +852,7 @@ def scan(force=False):
     sent = delivered_urls(ledger)
     for p in projects:
         p["pr_count"], p["issue_count"], p["upstream_count"] = 0, 0, 0
-        p["delivered_count"], p["pending_count"] = 0, 0
+        p["delivered_count"], p["pending_count"], p["stranger_count"] = 0, 0, 0
         p["error"] = p.get("directory_error", "")
         for r in p["repos"]:
             data = cache["repos"].get(r["name"], {})
@@ -810,11 +867,27 @@ def scan(force=False):
             # Open on GitHub and waiting for an agent are different numbers. An
             # item already delivered is in hand, so it must not keep a project at
             # the top of the list. Delivery can never exceed what is still open.
-            prefix = "https://github.com/" + r["name"].casefold() + "/"
-            r["delivered"] = min(prs + issues, sum(1 for u in sent if u.startswith(prefix)))
+            # Which of the items that are open RIGHT NOW were handed over. The
+            # receipt ledger also holds items closed since, so counting receipts
+            # by URL prefix overstates delivery and can hide real waiting work.
+            # With the whole population sampled the question is answered exactly.
+            sample = data.get("sample") or {}
+            urls = sample_urls(r["name"], sample) if sample.get("complete") else []
+            if urls or (sample.get("complete") and not prs + issues):
+                r["delivered"] = sum(1 for u in urls if u in sent)
+            else:
+                prefix = "https://github.com/" + r["name"].casefold() + "/"
+                r["delivered"] = min(prs + issues, sum(1 for u in sent if u.startswith(prefix)))
             r["pending"] = prs + issues - r["delivered"]
             p["delivered_count"] += r["delivered"]
             p["pending_count"] += r["pending"]
+            # Someone with no standing in a repository YOU own is a stranger at
+            # your door. On a repository you do not own they are simply the
+            # normal population, so that carries no signal and is not counted.
+            # An item already handed to an agent is in hand, like any other.
+            r["strangers"] = [x for x in (data.get("strangers") or [])
+                              if r["own"] and item_url(r["name"], x) not in sent]
+            p["stranger_count"] += len(r["strangers"])
             if not r["own"]:
                 p["upstream_count"] += prs + issues
         # A project a click cannot feed should say what would fix it.
@@ -823,12 +896,16 @@ def scan(force=False):
         if p["job"].get("status") == "sending":
             p["job"]["message"] = "Delivery pending/uncertain; inspect the session before retrying."
         p["agent_status"] = p["agents"][0].get("agent_status", "unknown") if len(p["agents"]) == 1 else ("choose agent" if p["agents"] else ("no local agent" if p.get("open", True) else "saved project · click to open"))
-        p["repos"].sort(key=lambda r: (-r.get("pending", 0),
+        p["repos"].sort(key=lambda r: (-len(r.get("strangers") or []),
+                                       -r.get("pending", 0),
                                        -((r.get("pullRequests") or {}).get("totalCount", 0)
                                          + (r.get("issues") or {}).get("totalCount", 0)),
                                        not (r.get("error") or not r.get("checked")),
                                        r["name"].casefold()))
-    projects.sort(key=lambda p: (-p["pending_count"], -(p["pr_count"] + p["issue_count"]),
+    # A person you do not know, at a repository you own, outranks volume. It is
+    # the one thing here no amount of open issues can substitute for.
+    projects.sort(key=lambda p: (-p["stranger_count"], -p["pending_count"],
+                                 -(p["pr_count"] + p["issue_count"]),
                                  p["label"].casefold(), p["session"]))
     result = {"projects": projects, "errors": errors, "login": cache.get("login", ""), "at": time.time()}
     write_json(STATE / "snapshot.json", result)

@@ -18,14 +18,21 @@ work brief. It supports Claude, Codex and other agents recognized by Herdr.
   Other rows still open the project; use Details to choose an agent or mapping.
 - If a terminal is already attached, it is focused. Otherwise the plugin opens
   your default terminal attached to that Herdr session.
-- The list is ranked by work still waiting for a handoff: the project with the
-  most items not yet sent to an agent sits at the top and the rest sort down from
-  there. Items already delivered are in hand, so a project whose whole queue is
+- **A person with no standing in a repository you own ranks above everything
+  else.** Not the owner, not a member, not a collaborator, not a returning
+  contributor, and never a bot: a stranger who just opened an issue or a PR at
+  your door. That one signal outranks any amount of volume, and the row names
+  how many there are. On a repository you do not own a stranger is simply the
+  normal population, so it carries no signal and is not counted.
+- Below that, the list is ranked by work still waiting for a handoff: the project
+  with the most items not yet sent to an agent sits above the rest. Items already delivered are in hand, so a project whose whole queue is
   with its agent stays listed, says "all N already sent to the agent", and ranks
   below anything with unsent work. A project with nothing open is not listed at
   all, and inside a project the same rules order and hide its repositories.
-  Delivery is counted per item URL, so an item edited since it was sent still
-  reads as delivered; a click fetches it fresh and carries it anyway.
+  Delivery is counted against the items that are open right now, not against the
+  receipt ledger, which also holds items closed since. An item edited since it
+  was sent still reads as delivered; a click fetches it fresh and carries it
+  anyway.
   Projects whose state is unknown — a GitHub error, or a folder with no
   repository mapped — stay listed below the ranked ones, since they still need a
   human. Typing in the search box searches every project, including quiet ones.
@@ -110,8 +117,13 @@ Every 15 seconds the plugin discovers all **running local named Herdr sessions**
 then reads their live workspace/pane/agent snapshots. New projects are included
 automatically and remembered when their sessions close. Saved folders are also
 monitored without Herdr. It resolves Git roots from the panes' directories and de-duplicates
-GitHub fetch remotes. GitHub counts are cached for five minutes, with manual
-Refresh and a one-minute retry after errors. Errors remain visible; old counts
+GitHub fetch remotes. The same batched query also returns, for each repository, the newest 100 open
+issues and 100 open pull requests by number and author association, which is
+where the stranger signal and the exact delivery count come from at no extra
+request. Every repository in this fleet is well inside that sample; a repository
+busier than it falls back to estimating delivery from the receipt ledger, and
+says nothing about strangers it did not see. GitHub counts are cached for five
+minutes, with manual Refresh and a one-minute retry after errors. Errors remain visible; old counts
 are not silently replaced with zero. Clicks and previews fetch complete,
 paginated open-item lists. Partial repository failures are reported in the UI
 and brief; only successfully fetched items are assigned. A failed Herdr discovery

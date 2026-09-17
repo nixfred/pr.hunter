@@ -1,5 +1,33 @@
 # Verification
 
+## Strangers rank first, and delivery became exact (2026-09-17)
+
+- A reader suggested weighting whether a human you do not know opened the thing.
+  Measured across all 41 repositories before building anything: 17 such items sat
+  on repositories Fred owns, against 69 on upstream repositories he does not.
+  Weighting strangers everywhere would simply re-float the busiest upstream
+  repositories, so the signal is counted only where he is the owner, which is
+  what the suggestion described. No bots appeared anywhere in that survey; they
+  are excluded by author type regardless.
+- GitHub returns author association in the batched query already being sent, so
+  the signal costs no extra request. A forced scan of 41 repositories takes 5.5 s
+  and the cache holds 20 KB.
+- The same sample exposed a real fault in the delivery count. It had been
+  estimated by counting receipts whose URL began with the repository, capped at
+  the open total. The ledger also holds receipts for items closed since, so blip
+  read as fully delivered while four open pull requests, two of them from
+  strangers, had never been sent. Delivery is now counted against the items that
+  are open right now. Verified by hand against the ledger: blip's four
+  undelivered items are pulls 96, 98, 99 and 100, and the scan now reports
+  exactly four pending.
+- 70 Python tests pass, six new: author association filtering with a bot, a
+  deleted account and a collaborator; one stranger outranking 80 open items;
+  strangers ignored on a repository you do not own; a stranger already handed to
+  an agent dropping out; delivery counted against currently open items; and the
+  estimate still used for a repository busier than the sample. The QML service
+  check, the native Herdr transport check and the isolated launch check pass.
+  Live panel and Details inspected in screenshots.
+
 ## Ranking counted the wrong number (2026-09-11)
 
 - Imprint sat at the top showing nine open items while a click reported nothing
