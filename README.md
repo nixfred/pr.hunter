@@ -54,7 +54,11 @@ work brief. It supports Claude, Codex and other agents recognized by Herdr.
   guessed from the workspace name, the row names it and Details pre-fills it;
   nothing is mapped without pressing Save mapping.
 - **Send again** in Details re-delivers a brief the agent received but never acted
-  on. It releases only that project's own delivery receipts. An ordinary click
+  on. It releases only receipts stamped with that project's own identity, so one
+  workspace can never unlock protection belonging to another mapped to the same
+  repository. A receipt predating that stamp is released only when the project's
+  retained handoff proves it owned the delivery, and otherwise stays protected
+  with the reason stated. An ordinary click
   still never resends work that was already delivered.
 - Counts are **open GitHub items**, not unfinished agent tasks. They fall when
   PRs/issues close or merge, within five minutes or when you press Refresh.

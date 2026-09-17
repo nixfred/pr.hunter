@@ -784,7 +784,11 @@ def send_job(project, job, ledger):
     # Record BEFORE sending. If transport fails after a paste, never retry blindly.
     job.update(status="sending", message="Submitting the work brief…")
     for v in versions:
-        ledger["sent"][v] = {"job": job["id"], "at": time.time()}
+        # The owning project is stamped on the receipt so that "Send again" can
+        # never release protection that belongs to a different project. Two
+        # workspaces often map to the same repository. Thanks to Tom Ballard
+        # (@tcballard) for catching this in PR #2.
+        ledger["sent"][v] = {"job": job["id"], "project": project.get("key"), "at": time.time()}
     write_json(STATE / "dispatch.json", ledger)
     try:
         prompt = (f"PR Hunter: process {len(job['items'])} selected PRs/issues for {project['label']}. "
@@ -992,11 +996,22 @@ def action(key, command, scope="all", pane=None, path=None, force=False):
         # agent never acted on can be re-delivered without unlocking anything else.
         if force:
             for i in items:
-                ledger["sent"].pop(version(i), None)
+                receipt = ledger["sent"].get(version(i), {})
+                owner = receipt.get("project")
+                # Older receipts name only a job. Release one of those only when
+                # this project's retained job proves it owned the delivery;
+                # anything unproven stays protected.
+                if owner == key or (owner is None and existing.get("id") is not None
+                                    and receipt.get("job") == existing["id"]):
+                    ledger["sent"].pop(version(i), None)
         items = [i for i in items if version(i) not in ledger["sent"]]
         if not items:
             if not fetched:
                 reason = "Opened the session. This scope has no open PRs or issues." + elsewhere(project, scope, cache)
+            elif force:
+                reason = ("Opened the session. Nothing could be resent from here: these receipts belong to "
+                          "another project, or their ownership predates the record and cannot be proved. "
+                          "The original handoff keeps its duplicate-delivery protection.")
             else:
                 when = existing.get("sent_at")
                 stamp = time.strftime(" at %H:%M on %d %b", time.localtime(when)) if when else ""

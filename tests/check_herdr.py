@@ -61,7 +61,8 @@ def check():
                                                 'state': 'idle', 'agent_session_id': 'isolated-test', 'seq': 1})
                 agents = h.rpc(sock, 'agent.list')['agents']
                 agent = next(a for a in agents if a['pane_id'] == pane)
-                project = {'label': 'Isolated test', 'socket': sock, 'session': 'isolated', 'workspace_id': wid}
+                project = {'key': h.project_key(sock, wid), 'label': 'Isolated test',
+                           'socket': sock, 'session': 'isolated', 'workspace_id': wid}
                 item = {'url': 'https://github.com/example/test/issues/1', 'updated': 'test', 'kind': 'Issue',
                         'repo': 'example/test', 'number': 1, 'title': 'Transport test', 'draft': False}
                 brief = temp / 'brief.md'

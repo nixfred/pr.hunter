@@ -406,19 +406,39 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(busy['pr_count'] + busy['issue_count'], 8)
         self.assertEqual(result['projects'][1]['pr_count'] + result['projects'][1]['issue_count'], 0)
 
-    def test_send_again_releases_only_this_project_receipts(self):
-        self.ledger['sent'] = {h.version(self.item): {'job': 'old'}, 'other/repo#9@x': {'job': 'old'}}
-        self.ledger['jobs'] = {}
+    def resend(self, sent, jobs):
+        self.ledger['sent'] = sent
+        self.ledger['jobs'] = jobs
         h.write_json(h.STATE / 'dispatch.json', self.ledger)
         with patch.object(h, 'find_project', return_value=self.project), \
              patch.object(h, 'refresh_repos', return_value={'login': 'me'}), \
              patch.object(h, 'open_items', return_value=[self.item]), \
              patch.object(h, 'focus_project', return_value=''), \
              patch.object(h, 'send_job') as send:
-            h.action('key', 'dispatch', force=True)
+            result = h.action('key', 'dispatch', force=True)
+        return send, result
+
+    def test_send_again_releases_this_project_own_receipt(self):
+        send, _ = self.resend({h.version(self.item): {'job': 'old', 'project': 'key'},
+                               'other/repo#9@x': {'job': 'old', 'project': 'key'}}, {})
         send.assert_called_once()
         self.assertEqual(send.call_args.args[1]['items'], [self.item])
         self.assertIn('other/repo#9@x', h.read_json(h.STATE / 'dispatch.json')['sent'])
+
+    def test_send_again_never_releases_another_project_receipt(self):
+        """Two workspaces often map to one repository; neither may unlock the other."""
+        send, result = self.resend({h.version(self.item): {'job': 'old', 'project': 'a different project'}}, {})
+        send.assert_not_called()
+        self.assertIn('belong to another project', result['message'])
+        self.assertIn(h.version(self.item), h.read_json(h.STATE / 'dispatch.json')['sent'])
+
+    def test_send_again_releases_a_legacy_receipt_only_when_ownership_is_proved(self):
+        retained = {'key': {**self.job, 'id': 'job', 'status': 'sent'}}
+        send, _ = self.resend({h.version(self.item): {'job': 'job'}}, retained)
+        send.assert_called_once()
+        send, result = self.resend({h.version(self.item): {'job': 'someone elses job'}}, retained)
+        send.assert_not_called()
+        self.assertIn('cannot be proved', result['message'])
 
     def test_empty_scope_names_the_scope_holding_the_work(self):
         project = {**self.project, 'repos': [
