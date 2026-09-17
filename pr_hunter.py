@@ -341,34 +341,24 @@ def refresh_repos(names, force=False, check_account=False):
         for name in sorted(set(names)):
             row = cache["repos"].get(name, {})
             interval = 60 if row.get("error") else 300
-            if force or now - row.get("attempt", 0) >= interval:
+            if force or ("open_urls" not in row and not row.get("error")) or now - row.get("attempt", 0) >= interval:
                 due.append(name)
-        for start in range(0, len(due), 30):
-            batch = due[start:start + 30]
-            fields = []
-            for i, name in enumerate(batch):
-                owner, repo = name.split("/")
-                fields.append(f'r{i}:repository(owner:{json.dumps(owner)},name:{json.dumps(repo)})'
-                              '{nameWithOwner url hasIssuesEnabled viewerPermission '
-                              'pullRequests(states:OPEN){totalCount} issues(states:OPEN){totalCount}}')
-            try:
-                # gh sends this GraphQL read using POST; no mutation is present.
-                p = subprocess.run(["gh", "api", "graphql", "--input", "-"],
-                                   input=json.dumps({"query": "query{" + " ".join(fields) + "}"}),
-                                   text=True, capture_output=True, timeout=35)
-                data = json.loads(p.stdout) if p.stdout.strip() else {}
-                for i, name in enumerate(batch):
-                    result = data.get("data", {}).get(f"r{i}") if data.get("data") else None
-                    old = cache["repos"].get(name, {})
-                    if result:
-                        cache["repos"][name] = {**result, "checked": now, "attempt": now}
-                    else:
-                        error = next((x.get("message") for x in data.get("errors", [])
-                                      if x.get("path", [None])[0] == f"r{i}"), None)
-                        cache["repos"][name] = {**old, "attempt": now, "error": error or p.stderr.strip()[:300] or "GitHub query failed"}
-            except (OSError, subprocess.TimeoutExpired, ValueError) as e:
-                for name in batch:
-                    cache["repos"][name] = {**cache["repos"].get(name, {}), "attempt": now, "error": str(e)[:300]}
+        # Counts and identities must come from the same complete, paginated
+        # snapshot. Aggregate counts cannot identify which receipts remain open.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            pending = [(name, pool.submit(open_items, name)) for name in due]
+            for name, future in pending:
+                old = cache["repos"].get(name, {})
+                try:
+                    items = future.result()
+                    cache["repos"][name] = {
+                        "checked": now, "attempt": now,
+                        "pullRequests": {"totalCount": sum(i["kind"] == "PR" for i in items)},
+                        "issues": {"totalCount": sum(i["kind"] == "Issue" for i in items)},
+                        "open_urls": sorted({i["url"].casefold() for i in items}),
+                    }
+                except (Failure, OSError, subprocess.TimeoutExpired, ValueError, KeyError) as e:
+                    cache["repos"][name] = {**old, "attempt": now, "error": str(e)[:300]}
         write_json(STATE / "github.json", cache)
         return cache
 
@@ -727,7 +717,7 @@ def send_job(project, job, ledger):
     # Record BEFORE sending. If transport fails after a paste, never retry blindly.
     job.update(status="sending", message="Submitting the work brief…")
     for v in versions:
-        ledger["sent"][v] = {"job": job["id"], "at": time.time()}
+        ledger["sent"][v] = {"job": job["id"], "project": project["key"], "at": time.time()}
     write_json(STATE / "dispatch.json", ledger)
     try:
         prompt = (f"PR Hunter: process {len(job['items'])} selected PRs/issues for {project['label']}. "
@@ -810,8 +800,7 @@ def scan(force=False):
             # Open on GitHub and waiting for an agent are different numbers. An
             # item already delivered is in hand, so it must not keep a project at
             # the top of the list. Delivery can never exceed what is still open.
-            prefix = "https://github.com/" + r["name"].casefold() + "/"
-            r["delivered"] = min(prs + issues, sum(1 for u in sent if u.startswith(prefix)))
+            r["delivered"] = len(sent.intersection(data.get("open_urls", [])))
             r["pending"] = prs + issues - r["delivered"]
             p["delivered_count"] += r["delivered"]
             p["pending_count"] += r["pending"]
@@ -915,11 +904,21 @@ def action(key, command, scope="all", pane=None, path=None, force=False):
         # agent never acted on can be re-delivered without unlocking anything else.
         if force:
             for i in items:
-                ledger["sent"].pop(version(i), None)
+                receipt = ledger["sent"].get(version(i), {})
+                # Older receipts only identify a job. Release those only when
+                # this project's retained job proves ownership; otherwise fail closed.
+                owner = receipt.get("project")
+                if owner == key or (owner is None and existing.get("id") is not None
+                                    and receipt.get("job") == existing["id"]):
+                    ledger["sent"].pop(version(i), None)
         items = [i for i in items if version(i) not in ledger["sent"]]
         if not items:
             if not fetched:
                 reason = "Opened the session. This scope has no open PRs or issues." + elsewhere(project, scope, cache)
+            elif force:
+                reason = ("Opened the session. No items can be resent by this project: "
+                          "their receipts belong to another project or have unverified legacy ownership. "
+                          "Inspect the original handoff; its duplicate-delivery protection was retained.")
             else:
                 when = existing.get("sent_at")
                 stamp = time.strftime(" at %H:%M on %d %b", time.localtime(when)) if when else ""

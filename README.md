@@ -47,7 +47,10 @@ work brief. It supports Claude, Codex and other agents recognized by Herdr.
   guessed from the workspace name, the row names it and Details pre-fills it;
   nothing is mapped without pressing Save mapping.
 - **Send again** in Details re-delivers a brief the agent received but never acted
-  on. It releases only that project's own delivery receipts. An ordinary click
+  on. It releases only that project's own delivery receipts. Older receipts
+  without project identity can be released only when the retained handoff proves
+  ownership; otherwise they remain protected and the action explains why.
+  An ordinary click
   still never resends work that was already delivered.
 - Counts are **open GitHub items**, not unfinished agent tasks. They fall when
   PRs/issues close or merge, within five minutes or when you press Refresh.
@@ -110,8 +113,11 @@ Every 15 seconds the plugin discovers all **running local named Herdr sessions**
 then reads their live workspace/pane/agent snapshots. New projects are included
 automatically and remembered when their sessions close. Saved folders are also
 monitored without Herdr. It resolves Git roots from the panes' directories and de-duplicates
-GitHub fetch remotes. GitHub counts are cached for five minutes, with manual
-Refresh and a one-minute retry after errors. Errors remain visible; old counts
+GitHub fetch remotes. GitHub counts and open-item URLs are fetched together from paginated item lists,
+with at most four repositories fetched concurrently. Both are cached for five minutes;
+only receipts for URLs still open are subtracted when ranking pending work. Existing
+count-only caches refresh on the next scan. Manual Refresh is available, and failed
+fetches retry after one minute. Errors remain visible; old counts
 are not silently replaced with zero. Clicks and previews fetch complete,
 paginated open-item lists. Partial repository failures are reported in the UI
 and brief; only successfully fetched items are assigned. A failed Herdr discovery

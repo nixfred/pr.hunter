@@ -158,8 +158,7 @@ class BackendTests(unittest.TestCase):
     def test_partial_github_error_retains_previous_count(self):
         h.write_json(h.STATE / 'github.json', {'login': 'me', 'login_checked': h.time.time(), 'repos': {'me/repo': {
             'checked': 1, 'attempt': 1, 'pullRequests': {'totalCount': 9}}}})
-        fake = type('Process', (), {'stdout': json.dumps({'data': {'r0': None}, 'errors': [{'path': ['r0'], 'message': 'not found'}]}), 'stderr': '', 'returncode': 1})()
-        with patch.object(h.subprocess, 'run', return_value=fake):
+        with patch.object(h, 'open_items', side_effect=h.Failure('not found')):
             result = h.refresh_repos(['me/repo'])
         self.assertEqual(result['repos']['me/repo']['pullRequests']['totalCount'], 9)
         self.assertEqual(result['repos']['me/repo']['error'], 'not found')
@@ -407,7 +406,7 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(result['projects'][1]['pr_count'] + result['projects'][1]['issue_count'], 0)
 
     def test_send_again_releases_only_this_project_receipts(self):
-        self.ledger['sent'] = {h.version(self.item): {'job': 'old'}, 'other/repo#9@x': {'job': 'old'}}
+        self.ledger['sent'] = {h.version(self.item): {'job': 'old', 'project': 'key'}, 'other/repo#9@x': {'job': 'old'}}
         self.ledger['jobs'] = {}
         h.write_json(h.STATE / 'dispatch.json', self.ledger)
         with patch.object(h, 'find_project', return_value=self.project), \
@@ -476,7 +475,8 @@ class BackendTests(unittest.TestCase):
 
         projects = [project('done', 'handed off', 'me/done'), project('fresh', 'untouched', 'me/fresh')]
         cache = {'login': 'me', 'repos': {
-            'me/done': {'pullRequests': {'totalCount': 5}, 'issues': {'totalCount': 4}, 'checked': 1},
+            'me/done': {'pullRequests': {'totalCount': 5}, 'issues': {'totalCount': 4}, 'checked': 1,
+                        'open_urls': [f'https://github.com/me/done/issues/{n}' for n in range(9)]},
             'me/fresh': {'pullRequests': {'totalCount': 2}, 'issues': {'totalCount': 0}, 'checked': 1}}}
         ledger = {'jobs': {}, 'sent': {f'https://github.com/me/done/issues/{n}@t': {} for n in range(9)}}
         with patch.object(h, 'discover', return_value=(projects, [])), \
@@ -492,7 +492,8 @@ class BackendTests(unittest.TestCase):
     def test_delivery_never_counts_more_than_is_open(self):
         projects = [{'key': 'k', 'label': 'shrunk', 'session': 's', 'agents': [], 'paths': ['/p'],
                      'open': True, 'repos': [{'name': 'Me/Repo', 'roots': ['/p'], 'remotes': []}]}]
-        cache = {'login': 'me', 'repos': {'Me/Repo': {'pullRequests': {'totalCount': 1}, 'issues': {'totalCount': 0}, 'checked': 1}}}
+        cache = {'login': 'me', 'repos': {'Me/Repo': {'pullRequests': {'totalCount': 1}, 'issues': {'totalCount': 0}, 'checked': 1,
+                         'open_urls': ['https://github.com/me/repo/pull/5']}}}
         # Six were delivered; five have since been closed, and case must not matter.
         ledger = {'jobs': {}, 'sent': {f'https://github.com/me/repo/pull/{n}@t': {} for n in range(6)}}
         with patch.object(h, 'discover', return_value=(projects, [])), \
@@ -501,6 +502,92 @@ class BackendTests(unittest.TestCase):
             result = h.scan()
         self.assertEqual(result['projects'][0]['delivered_count'], 1)
         self.assertEqual(result['projects'][0]['pending_count'], 0)
+
+    def test_closed_receipt_does_not_hide_new_open_item(self):
+        project = copy.deepcopy(self.project)
+        cache = {'login': 'me', 'repos': {'me/repo': {
+            'pullRequests': {'totalCount': 0}, 'issues': {'totalCount': 1},
+            'checked': 1, 'open_urls': ['https://github.com/me/repo/issues/2']}}}
+        ledger = {'jobs': {}, 'sent': {h.version(self.item): {'job': 'old'}}}
+        with patch.object(h, 'discover', return_value=([project], [])), \
+             patch.object(h, 'process_queue', return_value=ledger), \
+             patch.object(h, 'refresh_repos', return_value=cache):
+            result = h.scan()['projects'][0]
+        self.assertEqual(result['delivered_count'], 0)
+        self.assertEqual(result['pending_count'], 1)
+
+    def test_refresh_caches_open_identities_and_counts_together(self):
+        items = [self.item, {**self.item, 'kind': 'PR',
+                            'url': 'https://github.com/Me/Repo/pull/2'}]
+        h.write_json(h.STATE / 'github.json', {'login': 'me', 'login_checked': h.time.time(), 'repos': {}})
+        with patch.object(h, 'open_items', return_value=items) as fetch:
+            result = h.refresh_repos(['me/repo'])['repos']['me/repo']
+            h.refresh_repos(['me/repo'])
+        fetch.assert_called_once_with('me/repo')
+        self.assertEqual(result['pullRequests']['totalCount'], 1)
+        self.assertEqual(result['issues']['totalCount'], 1)
+        self.assertEqual(result['open_urls'], [self.item['url'], 'https://github.com/me/repo/pull/2'])
+
+    def test_legacy_count_cache_refreshes_before_ttl(self):
+        now = h.time.time()
+        h.write_json(h.STATE / 'github.json', {'login': 'me', 'login_checked': now, 'repos': {
+            'me/repo': {'checked': now, 'attempt': now, 'issues': {'totalCount': 99}}}})
+        with patch.object(h, 'open_items', return_value=[]) as fetch:
+            result = h.refresh_repos(['me/repo'])['repos']['me/repo']
+        fetch.assert_called_once()
+        self.assertEqual(result['open_urls'], [])
+        self.assertEqual(result['issues']['totalCount'], 0)
+
+    def test_failed_refresh_preserves_snapshot_and_retries_after_one_minute(self):
+        now = h.time.time()
+        old = {'checked': now - 301, 'attempt': now - 301,
+               'issues': {'totalCount': 1}, 'open_urls': [self.item['url']]}
+        h.write_json(h.STATE / 'github.json', {'login': 'me', 'login_checked': now,
+                                              'repos': {'me/repo': old}})
+        with patch.object(h, 'open_items', side_effect=h.Failure('offline')) as fetch:
+            result = h.refresh_repos(['me/repo'])['repos']['me/repo']
+            h.refresh_repos(['me/repo'])
+        fetch.assert_called_once()
+        self.assertEqual(result['open_urls'], old['open_urls'])
+        self.assertEqual(result['checked'], old['checked'])
+        self.assertEqual(result['error'], 'offline')
+        with patch.object(h.time, 'time', return_value=now + 61), \
+             patch.object(h, 'open_items', return_value=[]) as fetch:
+            result = h.refresh_repos(['me/repo'])['repos']['me/repo']
+        fetch.assert_called_once()
+        self.assertNotIn('error', result)
+        self.assertEqual(result['open_urls'], [])
+
+    def test_force_resend_preserves_other_worktree_and_unknown_legacy_receipts(self):
+        for receipt in [{'job': 'elsewhere', 'project': 'other-worktree'}, {'job': 'unknown-old-job'}]:
+            with self.subTest(receipt=receipt):
+                ledger = {'sent': {h.version(self.item): receipt}, 'jobs': {}}
+                h.write_json(h.STATE / 'dispatch.json', ledger)
+                with patch.object(h, 'find_project', return_value=self.project), \
+                     patch.object(h, 'refresh_repos', return_value={'login': 'me'}), \
+                     patch.object(h, 'open_items', return_value=[self.item]), \
+                     patch.object(h, 'focus_project', return_value=''), \
+                     patch.object(h, 'send_job') as send:
+                    h.action('key', 'dispatch', force=True)
+                send.assert_not_called()
+                self.assertEqual(h.read_json(h.STATE / 'dispatch.json')['sent'], ledger['sent'])
+
+    def test_force_resend_accepts_proven_legacy_owner(self):
+        ledger = {'sent': {h.version(self.item): {'job': 'old'}},
+                  'jobs': {'key': {'id': 'old', 'status': 'sent'}}}
+        h.write_json(h.STATE / 'dispatch.json', ledger)
+        with patch.object(h, 'find_project', return_value=self.project), \
+             patch.object(h, 'refresh_repos', return_value={'login': 'me'}), \
+             patch.object(h, 'open_items', return_value=[self.item]), \
+             patch.object(h, 'focus_project', return_value=''), \
+             patch.object(h, 'send_job') as send:
+            h.action('key', 'dispatch', force=True)
+        send.assert_called_once()
+
+    def test_new_receipts_record_project_owner(self):
+        with patch.object(h, 'rpc', side_effect=[{'agents': [self.agent]}, {'type': 'ok'}]):
+            h.send_job(self.project, self.job, self.ledger)
+        self.assertEqual(self.ledger['sent'][h.version(self.item)]['project'], 'key')
 
 
 if __name__ == '__main__':
