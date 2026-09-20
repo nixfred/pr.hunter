@@ -15,14 +15,18 @@ Panel {
     readonly property var projects: service ? service.projects : []
     property string selectedKey: ""
     property string selectedPane: ""
-    property string scope: "all"
+    // Your repositories by default. An upstream count under your project's name
+    // is someone else's queue, not yours, and reading it as yours is the whole
+    // reason this defaulted wrong.
+    property string scope: "mine"
+    property bool showAll: false
     property bool showBrief: false
     property string search: ""
     readonly property var current: projects.find(function(p) { return p.key === root.selectedKey }) || null
     readonly property var filtered: projects.filter(function(p) {
         return (p.label + " " + p.repos.map(function(r) { return r.name }).join(" ")).toLowerCase().indexOf(root.search.toLowerCase()) >= 0
     }).filter(function(p) {
-        return root.search.length > 0 || root.attention(p) === -1 || root.openItems(p) > 0
+        return root.search.length > 0 || root.showAll || root.needsAttention(p)
     }).sort(function(a, b) {
         var d = root.strangerCount(b) - root.strangerCount(a)
         if (d !== 0) return d
@@ -31,6 +35,17 @@ Panel {
         d = root.openItems(b) - root.openItems(a)
         return d !== 0 ? d : a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1
     })
+    readonly property string headline: {
+        var shown = root.filtered.length
+        if (root.search.length) return shown + " matching · searching every project"
+        if (root.showAll) return shown + " projects · showing all · click to open Herdr or your default terminal"
+        var hidden = root.projects.length - shown
+        var broken = root.projects.filter(function(p) { return !p.repos.length && p.error }).length
+        return shown + (shown === 1 ? " project needs" : " projects need") + " attention"
+            + (hidden > 0 ? " · " + hidden + " hidden, press Show all" : "")
+            + (broken > 0 ? " · " + broken + " saved folder" + (broken === 1 ? "" : "s") + " missing" : "")
+            + " · click to open Herdr or your default terminal"
+    }
     readonly property color ink: Color.popups.text
     readonly property color muted: Qt.alpha(ink, 0.65)
     readonly property color highlight: Qt.tint(ink, Qt.alpha(Color.accent, 0.35))
@@ -99,6 +114,18 @@ Panel {
         for (var i = 0; i < list.length; i++)
             if (seen.indexOf(list[i].login) < 0) seen.push(list[i].login)
         return seen
+    }
+    // A project earns a place in the default view only when it can be acted on:
+    // open items in the current scope, or a GitHub failure hiding whether there
+    // are any. A Herdr workspace with no repository mapped is neither, and there
+    // are dozens of those.
+    function needsAttention(project) {
+        // Nothing is mapped, so there is no work to act on either way. A saved
+        // folder that has gone missing is reported in the headline instead of
+        // sitting in the work list forever.
+        if (!project.repos.length) return false
+        // A GitHub failure hides whether there are items, which needs a human.
+        return project.error ? true : root.openItems(project) > 0
     }
     function openItems(project) {
         var repos = project.repos.filter(root.inScope)
@@ -172,10 +199,16 @@ Panel {
             return JSON.stringify({opened: root.opened, version: "1.1.0", serviceVersion: root.service ? root.service.version || "legacy" : "missing", projects: root.projects.length,
                 waiting: root.service ? root.service.waitingProjects : 0, busy: root.service ? root.service.busy : false,
                 error: root.service ? root.service.lastError : "Service not loaded", message: root.service ? root.service.message : "",
-                selected: root.selectedKey, scrollY: list.contentY, maxScroll: Math.max(0, list.contentHeight-list.height), previewReady: root.service ? root.service.previewReady : false,
+                selected: root.selectedKey, scope: root.scope, showAll: root.showAll, headline: root.headline, scrollY: list.contentY, maxScroll: Math.max(0, list.contentHeight-list.height), previewReady: root.service ? root.service.previewReady : false,
                 rows: root.filtered.map(function(p) { return {key:p.key,label:p.label,prs:p.pr_count,issues:p.issue_count,agent:p.agent_status,
                     agents:p.agents.length,repos:p.repos.length,open:p.open,job:p.job.status||"",
                     click:root.clickAction(p)} })})
+        }
+        // Scriptable equivalents of the header buttons, so the view can be driven
+        // and verified without a pointer.
+        function showAll(on: bool): void { root.showAll = on }
+        function setScope(name: string): void {
+            if (name === "all" || name === "mine" || name === "upstream") root.scope = name
         }
         function refresh(): void { if (root.service) root.service.refresh(true) }
         function preview(key: string): void {
@@ -199,7 +232,15 @@ Panel {
         owner: root
         open: root.opened
         contentWidth: fittedContentWidth(680)
-        contentHeight: cappedContentHeight(760)
+        // Fit the card to what is actually in it. With the default view showing
+        // only the projects that need attention, a fixed 760 left most of the
+        // panel as empty air. Capped, so a long list still cannot overflow the
+        // screen. The floor keeps the empty-state message centred in something.
+        readonly property real bodyHeight: root.current ? detailColumn.implicitHeight : list.contentHeight
+        // fittedContentHeight adds the card's own padding and border inset, which
+        // cappedContentHeight does not; hand-adding it left the list 36px short.
+        contentHeight: fittedContentHeight(header.implicitHeight + 22 + footer.implicitHeight
+                                           + Math.max(120, popup.bodyHeight), 760)
 
         Item {
             anchors.fill: parent
@@ -212,12 +253,13 @@ Panel {
                     Text { text: "PR HUNTER"; color: root.ink; font.family: Style.font.family; font.pixelSize: 21; font.bold: true; font.letterSpacing: 1; width: parent.width - refreshButton.width }
                     Button { id: refreshButton; text: root.service && root.service.refreshing ? "Checking…" : "Refresh"; enabled: root.service && !root.service.refreshing && !root.service.busy; onClicked: root.service.refresh(true) }
                 }
-                Text { width: parent.width; text: root.current ? root.current.label + "  /  " + root.current.session : root.filtered.length + " projects need attention · click to open Herdr or your default terminal"; wrapMode: Text.Wrap; color: root.muted; font.pixelSize: 12; textFormat: Text.PlainText }
+                Text { width: parent.width; text: root.current ? root.current.label + "  /  " + root.current.session : root.headline; wrapMode: Text.Wrap; color: root.muted; font.pixelSize: 12; textFormat: Text.PlainText }
                 Row {
                     spacing: 5
                     Button { text: "All remotes"; selected: root.scope === "all"; onClicked: root.scope = "all" }
                     Button { text: "Your repos"; selected: root.scope === "mine"; onClicked: root.scope = "mine" }
                     Button { text: "Upstream"; selected: root.scope === "upstream"; onClicked: root.scope = "upstream" }
+                    Button { text: "Show all"; selected: root.showAll; onClicked: root.showAll = !root.showAll }
                     Button { visible: root.current !== null; text: "← Projects"; onClicked: { root.selectedKey = ""; root.showBrief = false } }
                 }
                 TextField { width: parent.width; visible: !root.current; placeholderText: "Find a project or repository…"; onTextChanged: root.search = text }

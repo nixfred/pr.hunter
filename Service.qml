@@ -28,7 +28,11 @@ Item {
     readonly property bool busy: pendingAction !== null || (activeCommand !== "" && activeCommand !== "scan")
     property string helper: decodeURIComponent(String(Qt.resolvedUrl("pr_hunter.py")).replace(/^file:\/\/(localhost)?/, ""))
     readonly property var projects: snapshot.projects || []
-    readonly property int waitingProjects: projects.filter(function(p) { return p.pr_count + p.issue_count > 0 }).length
+    // The bar badge counts YOUR waiting work, matching the panel's default view.
+    // Upstream items belong to someone else's queue and never counted as yours.
+    readonly property int waitingProjects: projects.filter(function(p) {
+        return (p.pr_count + p.issue_count - (Number(p.upstream_count) || 0)) > 0
+    }).length
 
     function start(command, args) {
         activeCommand = command

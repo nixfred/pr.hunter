@@ -43,6 +43,12 @@ work brief. It supports Claude, Codex and other agents recognized by Herdr.
   In Details, **Open terminal** explicitly opens a regular terminal even when
   Herdr is installed. It reuses a terminal previously opened by PR Hunter when
   its foreground process still occupies that directory and its window is identifiable.
+- **The panel opens on your own repositories, showing only what needs attention.**
+  An upstream count under your project's name is someone else's queue: your fork
+  of `strata` having nothing open while `lgse/strata` has 85 items is not 85
+  items of yours. **Show all** reveals every project, including quiet ones,
+  upstream-only ones and workspaces with no repository mapped. The header always
+  says how many are hidden, and how many saved folders have gone missing.
 - **All remotes / Your repos / Upstream** chooses the queue sent by a click.
   “Your repos” means repositories owned by the account authenticated in `gh`.
 - A click never fails silently. Whatever it did — sent a brief, found nothing new,

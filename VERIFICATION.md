@@ -1,5 +1,25 @@
 # Verification
 
+## The default view showed mostly other people's work (2026-09-20)
+
+- Reported as wrong information. The counts were correct against GitHub; the
+  framing was not. Of 31 listed rows, 3 were Fred's own work, 8 showed an
+  upstream repository's counts under his project's name (`trackpad.pulse` read
+  "4 open PRs" while `nixfred/trackpad.pulse` had none and `davefano` had four),
+  and 20 were Herdr workspaces with no repository mapped at all.
+- The panel now opens on **Your repos** and lists only projects that need
+  attention. Same data, 31 rows down to 3, and the bar badge counts your own
+  waiting work rather than every remote, so badge and list agree.
+- **Show all** restores the full 64. Verified through the new `showAll` and
+  `setScope` IPC functions, which also make the header buttons scriptable:
+  default reports 3 rows, Show all reports 64.
+- A saved project whose folder has gone missing is no longer parked in the work
+  list forever; the header names the count instead. Two are currently missing.
+- The card now fits its content. With three rows the list scrolls 0 pixels
+  (it was 36 short when the inset was hand-added instead of using
+  `fittedContentHeight`), and under Show all the list scrolls inside its own box
+  while the page does not, per Law 17.
+
 ## Strangers rank first, and delivery became exact (2026-09-17)
 
 - A reader suggested weighting whether a human you do not know opened the thing.
