@@ -3,6 +3,7 @@ import QtQuick.Controls as Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 Panel {
@@ -46,9 +47,9 @@ Panel {
             + (broken > 0 ? " · " + broken + " saved folder" + (broken === 1 ? "" : "s") + " missing" : "")
             + " · click to open Herdr or your default terminal"
     }
-    readonly property color ink: Color.popups.text
+    readonly property color ink: Commons.Color.popups.text
     readonly property color muted: Qt.alpha(ink, 0.65)
-    readonly property color highlight: Qt.tint(ink, Qt.alpha(Color.accent, 0.35))
+    readonly property color highlight: Qt.tint(ink, Qt.alpha(Commons.Color.accent, 0.35))
 
     function syncRows() {
         if (!list) return
@@ -274,7 +275,7 @@ Panel {
                     width: parent.width
                     visible: text.length > 0
                     text: root.service ? [root.service.lastError, root.service.message].filter(function(s) { return s.length > 0 }).join("\n") : "Starting PR Hunter…"
-                    color: root.service && root.service.lastError ? Color.urgent : root.highlight
+                    color: root.service && root.service.lastError ? Commons.Color.urgent : root.highlight
                     wrapMode: Text.Wrap
                     font.pixelSize: 12
                     maximumLineCount: 3
@@ -311,7 +312,7 @@ Panel {
                         anchors { left: parent.left; leftMargin: 12; right: details.left; rightMargin: 10; verticalCenter: parent.verticalCenter }
                         spacing: 5
                         Text { width: parent.width; text: row.modelData.label; color: root.ink; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; textFormat: Text.PlainText }
-                        Text { width: parent.width; text: row.modelData.error ? "GitHub unavailable · Details" : row.modelData.repos.length ? root.counts(row.modelData) + root.waiting(row.modelData) + (row.modelData.upstream_count && root.scope === "all" ? " · includes upstream" : "") : (row.modelData.suggested_path ? "No repository mapped · Details suggests " + row.modelData.suggested_path : "No repository mapped · a click only opens the session"); color: row.modelData.error ? Color.urgent : root.highlight; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
+                        Text { width: parent.width; text: row.modelData.error ? "GitHub unavailable · Details" : row.modelData.repos.length ? root.counts(row.modelData) + root.waiting(row.modelData) + (row.modelData.upstream_count && root.scope === "all" ? " · includes upstream" : "") : (row.modelData.suggested_path ? "No repository mapped · Details suggests " + row.modelData.suggested_path : "No repository mapped · a click only opens the session"); color: row.modelData.error ? Commons.Color.urgent : root.highlight; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
                         Text { width: parent.width; text: !row.modelData.open ? "Saved project · click to open" : row.modelData.job.status === "queued" ? "Queued · waiting for agent" : (row.modelData.job.status === "sent" ? "Last handoff: " + row.modelData.job.message : row.modelData.job.message) || row.modelData.agent_status + " · " + row.modelData.session; color: root.muted; font.pixelSize: 12; elide: Text.ElideRight; textFormat: Text.PlainText }
                     }
                     Button { id: details; anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter } text: "Details"; onClicked: root.detail(row.modelData) }
@@ -340,7 +341,7 @@ Panel {
                             width: detailColumn.width
                             spacing: 4
                             Text { width: parent.width; text: modelData.name + (modelData.own ? "  ·  yours" : "  ·  upstream"); color: root.ink; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
-                            Text { width: parent.width; text: modelData.error || ((modelData.pullRequests ? modelData.pullRequests.totalCount : "?") + " PRs · " + (modelData.hasIssuesEnabled === false ? "issues disabled" : (modelData.issues ? modelData.issues.totalCount : "?") + " issues") + (root.repoStrangers(modelData) ? " · " + root.repoStrangers(modelData) + " from people you have not met: " + root.strangerNames(modelData).slice(0, 4).join(", ") + (root.strangerNames(modelData).length > 4 ? " and " + (root.strangerNames(modelData).length - 4) + " more" : "") : "") + (root.repoPending(modelData) < root.repoItems(modelData) ? " · " + root.repoPending(modelData) + " not yet sent" : "") + (modelData.checked ? " · checked " + new Date(modelData.checked * 1000).toLocaleTimeString() : "")); color: modelData.error ? Color.urgent : root.muted; font.pixelSize: 11; wrapMode: Text.Wrap; textFormat: Text.PlainText }
+                            Text { width: parent.width; text: modelData.error || ((modelData.pullRequests ? modelData.pullRequests.totalCount : "?") + " PRs · " + (modelData.hasIssuesEnabled === false ? "issues disabled" : (modelData.issues ? modelData.issues.totalCount : "?") + " issues") + (root.repoStrangers(modelData) ? " · " + root.repoStrangers(modelData) + " from people you have not met: " + root.strangerNames(modelData).slice(0, 4).join(", ") + (root.strangerNames(modelData).length > 4 ? " and " + (root.strangerNames(modelData).length - 4) + " more" : "") : "") + (root.repoPending(modelData) < root.repoItems(modelData) ? " · " + root.repoPending(modelData) + " not yet sent" : "") + (modelData.checked ? " · checked " + new Date(modelData.checked * 1000).toLocaleTimeString() : "")); color: modelData.error ? Commons.Color.urgent : root.muted; font.pixelSize: 11; wrapMode: Text.Wrap; textFormat: Text.PlainText }
                         }
                     }
                     Text { width: parent.width; text: root.current && root.current.paths.length ? "Project directory: " + root.current.paths[0] : "No directory saved — set a checkout below."; color: root.muted; font.pixelSize: 12; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText }
